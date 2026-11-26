@@ -32,6 +32,17 @@ class Speaker(context: Context) {
     private var pending: String? = null
     /** Told when reading starts (true) and ends (false), for the speaker button's animation. */
     var onSpeaking: (Boolean) -> Unit = {}
+    /** Told when a reading ends by itself (not when stopped), so the next thing in line can sound. */
+    var onIdle: () -> Unit = {}
+    /** From asking Google until the last word: nothing else should start sounding meanwhile. */
+    @Volatile private var active = false
+
+    private fun ended() {
+        if (!active) return
+        active = false
+        onSpeaking(false)
+        onIdle()
+    }
 
     private val tts: TextToSpeech = TextToSpeech(app) { status ->
         ready = status == TextToSpeech.SUCCESS
@@ -39,12 +50,16 @@ class Speaker(context: Context) {
             tts.language = Locale("es", "CR")
             tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(id: String?) { main.post { onSpeaking(true) } }
-                override fun onDone(id: String?) { main.post { onSpeaking(false) } }
+                override fun onDone(id: String?) { main.post { ended() } }
                 @Deprecated("Deprecated in Java")
-                override fun onError(id: String?) { main.post { onSpeaking(false) } }
+                override fun onError(id: String?) { main.post { ended() } }
             })
             pending?.let { local(it) }
             pending = null
+        } else {
+            // No voice of the radio either: the line must not wait forever.
+            pending = null
+            main.post { ended() }
         }
     }
 
@@ -53,6 +68,7 @@ class Speaker(context: Context) {
     fun say(text: String, voice: String = CloudVoice.MALE) {
         stop()
         val mine = ++turn
+        active = true
         main.post { onSpeaking(true) }
         Thread {
             val file = cloud.say(text, voice)
@@ -92,16 +108,17 @@ class Speaker(context: Context) {
     private fun finished(p: MediaPlayer) {
         runCatching { p.release() }
         if (player === p) player = null
-        onSpeaking(false)
+        ended()
     }
 
     private fun local(text: String) {
         if (!ready) { pending = text; return }
-        if (tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "letmeknow") != TextToSpeech.SUCCESS) onSpeaking(false)
+        if (tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "letmeknow") != TextToSpeech.SUCCESS) ended()
     }
 
     fun stop() {
         turn++
+        active = false
         player?.let { runCatching { it.stop() }; runCatching { it.release() } }
         player = null
         pending = null
@@ -109,7 +126,17 @@ class Speaker(context: Context) {
         onSpeaking(false)
     }
 
-    val speaking: Boolean get() = player != null || (ready && tts.isSpeaking)
+    val speaking: Boolean get() = active || player != null || (ready && tts.isSpeaking)
+
+    /** "Notificación nueva de …": only who (and, with [count], how many are unread), when it is not read whole now. */
+    fun announce(n: Notice, count: Int = 0) {
+        val many = when {
+            count > 1 -> " Tiene $count mensajes sin leer."
+            count == 1 -> " Tiene 1 mensaje sin leer."
+            else -> ""
+        }
+        say("Notificación nueva de ${n.title.ifBlank { n.app }}.$many", if (Settings.female(app, n)) CloudVoice.FEMALE else CloudVoice.MALE)
+    }
 
     /** The arrival sound: one, reused. A new one each time leaves players open until the radio runs out. */
     private var ring: android.media.Ringtone? = null

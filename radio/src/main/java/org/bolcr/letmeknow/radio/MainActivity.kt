@@ -208,6 +208,18 @@ class MainActivity : Activity() {
                 }
             }.start()
         })
+        // What happens when a message arrives, for all of them.
+        col.addView(card(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(text("Al llegar un mensaje", 22f, look.ink, true))
+            addView(switchRow(R.drawable.ic_bell, "Sonido al llegar", Settings.sound(this@MainActivity)) { Settings.setSound(this@MainActivity, it) })
+            addView(switchRow(R.drawable.ic_speaker, "Leer en voz alta solo", Settings.autoRead(this@MainActivity)) { Settings.setAutoRead(this@MainActivity, it) })
+            addView(switchRow(R.drawable.ic_chat, "Anunciar: «Notificación nueva de…»", Settings.announce(this@MainActivity)) { Settings.setAnnounce(this@MainActivity, it) })
+            addView(switchRow(R.drawable.ic_quick, "Decir cuántos mensajes sin leer", Settings.announceCount(this@MainActivity)) { Settings.setAnnounceCount(this@MainActivity, it) })
+            addView(text("Si se lee solo, no hace falta el anuncio: ya dice de quién es. Con una ventana abierta solo se anuncia, y se lee al cerrarla.", 16f, look.soft, false),
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(8) })
+        }), spaced())
+
         // The voice for conversations without their own (each one is chosen holding its bubble).
         val voices = row()
         listOf(false to "Hombre", true to "Mujer").forEachIndexed { i, (female, label) ->
@@ -302,5 +314,28 @@ class MainActivity : Activity() {
         background = look.round(fill, 20, stroke = fill == look.chip)
         setPadding(look.px(26), look.px(16), look.px(26), look.px(16))
         setOnClickListener { onClick() }
+    }
+
+    /** A line with an icon, words and the green switch, like the ones in the bubbles' window. */
+    private fun switchRow(res: Int, label: String, on: Boolean, change: (Boolean) -> Unit): View {
+        val r = row().apply { setPadding(0, look.px(10), 0, look.px(10)) }
+        r.addView(ImageView(this).apply {
+            setImageResource(res)
+            setColorFilter(look.ink, PorterDuff.Mode.SRC_IN)
+        }, LinearLayout.LayoutParams(look.px(32), look.px(32)))
+        r.addView(text(label, 20f, look.ink, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(16) })
+        val track = android.widget.FrameLayout(this)
+        val knob = View(this).apply { background = look.oval(android.graphics.Color.WHITE) }
+        track.addView(knob, android.widget.FrameLayout.LayoutParams(look.px(36), look.px(36), Gravity.CENTER_VERTICAL))
+        var state = on
+        fun paint(animate: Boolean) {
+            track.background = look.round(if (state) Look.GREEN else look.off, 22)
+            val x = if (state) look.px(36).toFloat() else look.px(4).toFloat()
+            if (animate) knob.animate().translationX(x).setDuration(160).start() else knob.translationX = x
+        }
+        paint(false)
+        r.addView(track, LinearLayout.LayoutParams(look.px(76), look.px(44)))
+        r.setOnClickListener { state = !state; change(state); paint(true) }
+        return r
     }
 }
