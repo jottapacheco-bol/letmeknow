@@ -176,6 +176,9 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                 android.graphics.Color.argb(if (look.dark) 245 else 170, 0, 0, 0), look.px(22).toFloat(), look.px(12).toFloat())
             setPadding(look.px(10), 0, look.px(12), 0)
             contentDescription = "${n.title}, ${n.app}"
+            // The numbers and marks on the photo's corners stick out of it; they must not be cut.
+            clipChildren = false
+            clipToPadding = false
         }
         row.addView(avatar(n, 64), LinearLayout.LayoutParams(look.px(64), look.px(64)))
         val words = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
@@ -1759,10 +1762,9 @@ class FloatShadow(private val glass: android.graphics.drawable.Drawable, color: 
     override fun draw(canvas: Canvas) {
         val b = bounds
         val r = b.height() / 2f
-        canvas.save()
-        canvas.clipOutPath(shape)
+        // No clipping around the glass (a clipped edge has no smoothing and looked jagged on the radio): the shadow
+        // goes under the glass, which is nearly solid anyway.
         canvas.drawRoundRect(b.left - blur * 0.15f, b.top + drop * 0.6f, b.right + blur * 0.15f, b.bottom + drop, r, r, paint)
-        canvas.restore()
         glass.draw(canvas)
     }
 

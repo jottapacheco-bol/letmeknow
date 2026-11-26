@@ -1,5 +1,9 @@
 # LetMeKnow del radio
 
+## 1.0.4
+
+- El número de la bolita ya no sale cortado, y el borde de la burbuja queda liso (antes se veía pixelado).
+
 ## 1.0.3
 
 - «Decir cuántos mensajes sin leer» solo lo dice con dos o más; con uno, solo anuncia.
