@@ -130,11 +130,8 @@ class Speaker(context: Context) {
 
     /** "Notificación nueva de …": only who (and, with [count], how many are unread), when it is not read whole now. */
     fun announce(n: Notice, count: Int = 0) {
-        val many = when {
-            count > 1 -> " Tiene $count mensajes sin leer."
-            count == 1 -> " Tiene 1 mensaje sin leer."
-            else -> ""
-        }
+        // Only from two on: with one, the announcement already says it all.
+        val many = if (count > 1) " Tiene $count mensajes sin leer." else ""
         say("Notificación nueva de ${n.title.ifBlank { n.app }}.$many", if (Settings.female(app, n)) CloudVoice.FEMALE else CloudVoice.MALE)
     }
 
