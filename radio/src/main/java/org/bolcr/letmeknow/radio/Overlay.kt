@@ -80,12 +80,15 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         closePanel(animated = false)
         bubbles?.let { runCatching { wm.removeView(it) } }
         bubbles = null
+        ready?.second?.let { runCatching { it.release() } }
+        ready = null
         speaker.shutdown()
     }
 
     private fun allowed() = AndroidSettings.canDrawOverlays(context)
 
     private fun changed(arrived: Notice?) {
+        if (arrived?.audio != null) preload(arrived)
         if (arrived != null && !Settings.muted(arrived)) {
             if (Settings.sound(context)) speaker.chime()
             if (Settings.autoRead(context)) main.postDelayed({ speaker.read(arrived) }, 600)
@@ -871,11 +874,70 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     private var player: android.media.MediaPlayer? = null
     private var progress: ValueAnimator? = null
 
+    /** The audio of the last message that brought one, already loaded so it starts at the touch. */
+    private var ready: Pair<String, android.media.MediaPlayer>? = null
+
+    /** Loads [n]'s audio in the background as soon as it arrives. */
+    private fun preload(n: Notice) {
+        if (n.audio == null || ready?.first == n.key) return
+        Thread {
+            val mp = prepareAudio(n) ?: return@Thread
+            main.post {
+                ready?.second?.let { runCatching { it.release() } }
+                ready = n.key to mp
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    private fun takeReady(n: Notice): android.media.MediaPlayer? {
+        val (key, mp) = ready ?: return null
+        if (key != n.key) return null
+        ready = null
+        return mp
+    }
+
+    /** A player for the audio, from a file it can read; null if the radio can't play that kind of audio. */
+    private fun prepareAudio(n: Notice): android.media.MediaPlayer? {
+        val bytes = n.audio ?: return null
+        val ext = n.audioType.substringAfter('/').substringBefore(';').ifBlank { "audio" }
+        val file = java.io.File(context.cacheDir, "audio-${n.key.hashCode().toUInt()}.$ext")
+        val mp = android.media.MediaPlayer()
+        return try {
+            file.writeBytes(bytes)
+            mp.setAudioAttributes(android.media.AudioAttributes.Builder()
+                // The same way as the reading voice, which the radio lets through at once.
+                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            mp.setDataSource(file.path)
+            mp.prepare()
+            mp
+        } catch (e: Exception) {
+            mp.release()
+            null
+        }
+    }
+
+    private var playerKey: String? = null
+
+    /** Stops the audio; the player stays loaded for that message, so opening it again starts at once too. */
     private fun stopAudio() {
         progress?.cancel()
         progress = null
-        player?.let { runCatching { it.stop() }; it.release() }
+        val mp = player ?: return
         player = null
+        val key = playerKey
+        try {
+            if (mp.isPlaying) mp.pause()
+            mp.seekTo(0)
+            mp.setOnCompletionListener(null)
+            if (key != null && Inbox.get(key) != null) {
+                ready?.second?.let { runCatching { it.release() } }
+                ready = key to mp
+                return
+            }
+        } catch (_: Exception) {
+        }
+        runCatching { mp.release() }
     }
 
     /**
@@ -905,22 +967,9 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         r.addView(time)
 
         fun clock(ms: Long) = (ms / 1000).let { "%d:%02d".format(it / 60, it % 60) }
-        // Ready to play, from a file the player can read.
-        val ext = n.audioType.substringAfter('/').substringBefore(';').ifBlank { "audio" }
-        val file = java.io.File(context.cacheDir, "audio.$ext")
-        val mp = try {
-            file.writeBytes(n.audio ?: return voiceRow(n))
-            android.media.MediaPlayer().apply {
-                setAudioAttributes(android.media.AudioAttributes.Builder()
-                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
-                setDataSource(file.path)
-                prepare()
-            }
-        } catch (e: Exception) {
-            // The radio can't play this kind of audio: like before, "Oír" opens it on the phone.
-            return voiceRow(n)
-        }
+        // Usually ready already (prepared when the message arrived); if not, prepared now.
+        val mp = takeReady(n) ?: prepareAudio(n) ?: return voiceRow(n)
+        playerKey = n.key
         player = mp
         val total = mp.duration.toLong().coerceAtLeast(1)
         time.text = clock(total)
