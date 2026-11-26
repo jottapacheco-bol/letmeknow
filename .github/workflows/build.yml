@@ -46,7 +46,7 @@ jobs:
           TTS_KEY_LEVITE: ${{ secrets.TTS_KEY_LEVITE }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleRelease
       - name: Publish the APKs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -63,8 +63,8 @@ jobs:
             sha="${{ github.sha }}"
             suffix=""
           fi
-          cp telefono/build/outputs/apk/debug/telefono-debug.apk "out/LetMeKnow-Telefono-$phone$suffix.apk"
-          cp radio/build/outputs/apk/debug/radio-debug.apk "out/LetMeKnow-Radio-$radio$suffix.apk"
+          cp telefono/build/outputs/apk/release/telefono-release.apk "out/LetMeKnow-Telefono-$phone$suffix.apk"
+          cp radio/build/outputs/apk/release/radio-release.apk "out/LetMeKnow-Radio-$radio$suffix.apk"
           # A pull request's pre-release is made again on each push, at its newest code.
           gh release delete "$tag" --cleanup-tag -y 2>/dev/null || true
           if [ "${{ github.event_name }}" = "pull_request" ]; then

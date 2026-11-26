@@ -20,7 +20,6 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.HapticFeedbackConstants
-import android.view.VelocityTracker
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
@@ -206,27 +205,27 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     }
 
     /**
-     * Touching opens. Dragging (up, down, or holding a moment and then anywhere) moves all the bubbles, also to the
-     * other side of the screen, so they never cover what is behind. A quick sideways throw of a conversation
-     * ([onThrow]) sends it off the screen and removes it from the radio (it comes back if a new message arrives).
+     * Touching opens. Dragging up or down moves all the bubbles (also to the other side of the screen), so they never
+     * cover what is behind. Holding still fills an orange ring around the photo and opens [onHold] by itself. Pulling
+     * a conversation sideways lifts it into its own little window that follows the finger anywhere; past half its
+     * width a red ✕ shows, and only lifting the finger with the ✕ showing removes it ([onThrow]). Coming back cancels.
      */
     @SuppressLint("ClickableViewAccessibility")
     private fun drag(v: View, onThrow: (() -> Unit)? = null, onHold: (() -> Unit)? = null, onTap: () -> Unit) {
         val slop = ViewConfiguration.get(context).scaledTouchSlop
-        val fling = ViewConfiguration.get(context).scaledMinimumFlingVelocity * 6
         var downY = 0f
         var downX = 0f
         var startY = 0
         var startX = 0
-        // 0 nothing yet, 1 moving the bubbles, 2 throwing this one, 3 held still (lifting it opens [onHold]).
+        // 0 nothing yet, 1 moving the bubbles, 2 throwing this one, 4 the hold already opened its window.
         var gesture = 0
-        var tracker: VelocityTracker? = null
-        val hold = Runnable {
-            if (gesture == 0) {
-                gesture = 3
-                v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                v.animate().scaleX(1.06f).scaleY(1.06f).setDuration(120).start()
-            }
+        val ring = if (onHold != null) HoldRing(look.px(10) + look.px(32), look.px(42).toFloat(), look.px(5).toFloat()).also { v.foreground = it } else null
+        var filling: ValueAnimator? = null
+        var ghost: Ghost? = null
+        fun stopFilling() {
+            filling?.cancel()
+            filling = null
+            ring?.progress = 0f
         }
         v.setOnTouchListener { view, e ->
             val params = bubblesParams ?: return@setOnTouchListener false
@@ -234,19 +233,36 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = e.rawX; downY = e.rawY; startY = params.y; startX = params.x; gesture = 0
-                    tracker = VelocityTracker.obtain().also { it.addMovement(e) }
-                    view.animate().scaleX(0.94f).scaleY(0.94f).setDuration(90).start()
-                    main.postDelayed(hold, 350)
+                    view.animate().scaleX(0.96f).scaleY(0.96f).setDuration(90).start()
+                    if (ring != null) {
+                        filling = ValueAnimator.ofFloat(0f, 1f).apply {
+                            startDelay = 150
+                            duration = 750
+                            addUpdateListener { ring.progress = it.animatedValue as Float }
+                            addListener(object : android.animation.AnimatorListenerAdapter() {
+                                private var cancelled = false
+                                override fun onAnimationCancel(a: android.animation.Animator) { cancelled = true }
+                                override fun onAnimationEnd(a: android.animation.Animator) {
+                                    if (cancelled || gesture != 0) return
+                                    gesture = 4
+                                    view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                                    view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                                    ring.progress = 0f
+                                    onHold?.invoke()
+                                }
+                            })
+                            start()
+                        }
+                    }
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    tracker?.addMovement(e)
                     val dx = e.rawX - downX
                     val dy = e.rawY - downY
-                    if (gesture == 3 && (abs(dx) > slop || abs(dy) > slop)) gesture = 1
                     if (gesture == 0 && (abs(dx) > slop || abs(dy) > slop)) {
-                        main.removeCallbacks(hold)
-                        gesture = if (onThrow != null && abs(dx) > abs(dy) * 1.3f) 2 else 1
+                        stopFilling()
                         view.animate().scaleX(1f).scaleY(1f).setDuration(90).start()
+                        gesture = if (onThrow != null && abs(dx) > abs(dy) * 1.3f) 2 else 1
+                        if (gesture == 2) ghost = Ghost(view)
                     }
                     when (gesture) {
                         1 -> {
@@ -255,52 +271,125 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                             params.x = (startX + if (fromEnd) -dx else dx).toInt().coerceIn(0, width / 2)
                             bubbles?.let { runCatching { wm.updateViewLayout(it, params) } }
                         }
-                        2 -> {
-                            view.translationX = dx
-                            view.alpha = (1f - abs(dx) / (view.width * 1.2f)).coerceIn(0.15f, 1f)
-                            view.rotation = dx / view.width * 8f
-                        }
+                        2 -> ghost?.follow(dx, dy)
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    main.removeCallbacks(hold)
-                    tracker?.addMovement(e)
-                    tracker?.computeCurrentVelocity(1000)
-                    val vx = tracker?.xVelocity ?: 0f
-                    tracker?.recycle()
-                    tracker = null
+                    stopFilling()
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
                     when (gesture) {
-                        1 -> {
-                            view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
-                            settle(params, e.rawX)
-                        }
-                        3 -> {
-                            view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
-                            if (e.actionMasked == MotionEvent.ACTION_UP) {
-                                if (onHold != null) onHold() else settle(params, e.rawX)
-                            }
-                        }
+                        1 -> settle(params, e.rawX)
                         2 -> {
-                            val dx = e.rawX - downX
-                            val thrown = abs(dx) > view.width * 0.4f || (abs(vx) > fling && vx * dx > 0)
-                            if (thrown) {
-                                val dir = if (dx > 0) 1f else -1f
-                                view.animate().translationX(dir * view.width * 1.6f).alpha(0f).rotation(dir * 14f)
-                                    .setDuration(220).setInterpolator(DecelerateInterpolator())
-                                    .withEndAction { onThrow?.invoke() }.start()
-                            } else {
-                                view.animate().translationX(0f).alpha(1f).rotation(0f)
-                                    .setDuration(260).setInterpolator(OvershootInterpolator(1.6f)).start()
-                            }
+                            val g = ghost
+                            ghost = null
+                            if (g != null && g.past && e.actionMasked == MotionEvent.ACTION_UP) g.away { onThrow?.invoke() }
+                            else g?.back()
                         }
-                        else -> {
-                            view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
-                            if (e.actionMasked == MotionEvent.ACTION_UP) onTap()
-                        }
+                        0 -> if (e.actionMasked == MotionEvent.ACTION_UP) onTap()
                     }
                 }
             }
             true
+        }
+    }
+
+    /**
+     * A conversation being thrown: its picture in its own small window, so it can go anywhere on the screen without
+     * being cut by the bubbles' window. The real bubble waits, hidden, in its place.
+     */
+    private inner class Ghost(private val real: View) {
+        private val home = IntArray(2).also { real.getLocationOnScreen(it) }
+        private val box = FrameLayout(context)
+        private val cross: View
+        private val params = WindowManager.LayoutParams(
+            real.width, real.height,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = home[0]
+            y = home[1]
+        }
+        /** Past half its width: lifting the finger now removes it. */
+        var past = false
+            private set
+
+        init {
+            val picture = android.graphics.Bitmap.createBitmap(real.width.coerceAtLeast(1), real.height.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
+            real.draw(Canvas(picture))
+            box.addView(ImageView(context).apply { setImageBitmap(picture) }, FrameLayout.LayoutParams(real.width, real.height))
+            val size = look.px(64)
+            cross = icon(R.drawable.ic_close, android.graphics.Color.WHITE, 30, null).apply {
+                background = look.oval(Look.RED)
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                setPadding(look.px(17), look.px(17), look.px(17), look.px(17))
+                alpha = 0f
+                scaleX = 0.6f; scaleY = 0.6f
+            }
+            box.addView(cross, FrameLayout.LayoutParams(size, size, Gravity.CENTER))
+            runCatching { wm.addView(box, params) }
+            real.visibility = View.INVISIBLE
+        }
+
+        fun follow(dx: Float, dy: Float) {
+            params.x = (home[0] + dx).toInt()
+            params.y = (home[1] + dy * 0.4f).toInt()
+            runCatching { wm.updateViewLayout(box, params) }
+            box.rotation = dx / real.width * 8f
+            val now = abs(dx) > real.width * 0.5f
+            if (now != past) {
+                past = now
+                if (now) real.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                cross.animate().alpha(if (now) 1f else 0f).scaleX(if (now) 1f else 0.6f).scaleY(if (now) 1f else 0.6f).setDuration(140).start()
+            }
+            box.alpha = if (now) 0.75f else 1f
+        }
+
+        /** Off the screen the way it was going, then gone. */
+        fun away(then: () -> Unit) {
+            val dir = if (params.x >= home[0]) 1 else -1
+            val from = params.x
+            val to = from + dir * (context.resources.displayMetrics.widthPixels / 2 + real.width)
+            ValueAnimator.ofInt(from, to).apply {
+                duration = 220
+                interpolator = DecelerateInterpolator()
+                addUpdateListener { params.x = it.animatedValue as Int; runCatching { wm.updateViewLayout(box, params) } }
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(a: android.animation.Animator) {
+                        runCatching { wm.removeView(box) }
+                        then()
+                    }
+                })
+                start()
+            }
+            box.animate().alpha(0f).setDuration(220).start()
+        }
+
+        /** Changed its mind: back to its place. */
+        fun back() {
+            val fx = params.x
+            val fy = params.y
+            cross.animate().alpha(0f).setDuration(100).start()
+            box.animate().rotation(0f).alpha(1f).setDuration(260).start()
+            ValueAnimator.ofFloat(1f, 0f).apply {
+                duration = 260
+                interpolator = OvershootInterpolator(1.4f)
+                addUpdateListener {
+                    val k = it.animatedValue as Float
+                    params.x = (home[0] + (fx - home[0]) * k).toInt()
+                    params.y = (home[1] + (fy - home[1]) * k).toInt()
+                    runCatching { wm.updateViewLayout(box, params) }
+                }
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(a: android.animation.Animator) {
+                        real.visibility = View.VISIBLE
+                        runCatching { wm.removeView(box) }
+                    }
+                })
+                start()
+            }
         }
     }
 
@@ -335,8 +424,6 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             alpha = 0f
             animate().alpha(1f).setDuration(250).start()
         }
-        val dm = context.resources.displayMetrics
-        val w = minOf((dm.widthPixels * 0.8f).toInt(), look.px(980))
         val c = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             background = look.round(look.panel, 36, stroke = true)
@@ -344,16 +431,17 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             setPadding(look.px(34), look.px(30), look.px(34), look.px(30))
             isClickable = true
         }
+        // As big as the screen lets it (a small margin, below the radio's top bar), so nothing is ever cut.
         val onLeft = !Settings.bubblesLeft(context)
-        root.addView(c, FrameLayout.LayoutParams(w, ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.CENTER_VERTICAL or if (onLeft) Gravity.START else Gravity.END).apply {
-            marginStart = look.px(60)
-            marginEnd = look.px(60)
+        val bar = context.resources.getIdentifier("status_bar_height", "dimen", "android")
+            .let { if (it != 0) context.resources.getDimensionPixelSize(it) else 0 }
+        val m = look.px(18)
+        root.addView(c, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
+            setMargins(m, bar + m, m, m)
         })
         wm.addView(root, overlayParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         panel = root
         card = c
-        movable(c, root)
         // It grows out of the bubbles' corner.
         c.post {
             c.pivotX = if (onLeft) c.width.toFloat() else 0f
@@ -365,63 +453,6 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         }
         bubbles?.visibility = View.GONE
         return c
-    }
-
-    /**
-     * The window moves where the finger takes it (touching anywhere that is not a button) and stays there the next
-     * time; it never leaves the screen, also when it grows (answering, quick replies).
-     */
-    @SuppressLint("ClickableViewAccessibility")
-    private fun movable(c: View, root: View) {
-        val slop = ViewConfiguration.get(context).scaledTouchSlop
-        fun keepIn() {
-            if (root.width == 0 || c.width == 0) return
-            c.translationX = c.translationX.coerceIn(-c.left.toFloat(), (root.width - c.right).toFloat())
-            c.translationY = c.translationY.coerceIn(-c.top.toFloat(), maxOf(0, root.height - c.bottom).toFloat())
-        }
-        var placed = false
-        c.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            if (!placed && c.width > 0) {
-                placed = true
-                val x = Settings.panelX(context)
-                val y = Settings.panelY(context)
-                if (x >= 0 && y >= 0) {
-                    c.translationX = (x - c.left).toFloat()
-                    c.translationY = (y - c.top).toFloat()
-                }
-            }
-            keepIn()
-        }
-        var downX = 0f
-        var downY = 0f
-        var startX = 0f
-        var startY = 0f
-        var moving = false
-        c.setOnTouchListener { v, e ->
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    downX = e.rawX; downY = e.rawY; startX = v.translationX; startY = v.translationY; moving = false
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = e.rawX - downX
-                    val dy = e.rawY - downY
-                    if (!moving && (abs(dx) > slop || abs(dy) > slop)) {
-                        moving = true
-                        v.animate().scaleX(1.02f).scaleY(1.02f).setDuration(120).start()
-                    }
-                    if (moving) {
-                        v.translationX = startX + dx
-                        v.translationY = startY + dy
-                        keepIn()
-                    }
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (moving) {
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
-                    Settings.setPanelPlace(context, (v.left + v.translationX).toInt(), (v.top + v.translationY).toInt())
-                }
-            }
-            true
-        }
     }
 
     fun openPanel(key: String) {
@@ -453,15 +484,74 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         if (next == null) closePanel() else showRead(next.key, fade = true)
     }
 
-    /** The message in big letters and the five big buttons. */
+    /** The way each kind of window sits in the card: the message uses all of it, the others are centred. */
+    private fun fill(c: LinearLayout, whole: Boolean) {
+        c.removeAllViews()
+        if (whole) {
+            c.setPadding(0, 0, 0, 0)
+            c.gravity = Gravity.TOP
+        } else {
+            c.setPadding(look.px(34), look.px(26), look.px(34), look.px(26))
+            c.gravity = Gravity.CENTER_VERTICAL
+        }
+    }
+
+    /**
+     * The message: on the left, the driver's side, a column with the big buttons (they grow or shrink to the
+     * radio's height); on top the name with A−, A+, silence, the others, Listo and close; the words get the rest.
+     */
     private fun showRead(key: String, fade: Boolean) {
         val c = card ?: return
         val n = Inbox.get(key) ?: return closePanel()
         mode = Mode.READ
         openKey = key
         dictation?.stop()
-        c.removeAllViews()
-        c.addView(header(n))
+        fill(c, whole = true)
+        val whole = row(Gravity.TOP)
+        c.addView(whole, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        // The column of buttons.
+        val dm = context.resources.displayMetrics
+        val label = look.px(28)
+        val room = (c.height.takeIf { it > 0 } ?: (dm.heightPixels - look.px(120))) - look.px(36)
+        val count = if (n.canReply) 4 else 2
+        val size = ((room - count * label) / count - look.px(14)).coerceIn(look.px(64), look.px(112))
+        val rail = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(look.px(16), look.px(18), look.px(16), look.px(18))
+            background = look.round(look.chip, 36)
+        }
+        fun place(v: View, i: Int) {
+            rail.addView(v, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, 0, 1f))
+            v.alpha = 0f
+            v.translationX = -look.px(24).toFloat()
+            v.animate().alpha(1f).translationX(0f).setStartDelay(i * 60L).setDuration(300).start()
+        }
+        val listen = action(R.drawable.ic_speaker, "Escuchar", Look.ORANGE, Look.ON_ORANGE, size = size) {
+            if (speaker.speaking) speaker.stop() else speaker.read(n)
+        }
+        place(listen, 0)
+        speaker.onSpeaking = { on -> beat(listen.getChildAt(0), on) }
+        if (n.canReply) {
+            place(action(R.drawable.ic_mic, "Responder", Look.BLUE, Look.ON_BLUE, size = size) { showReply(key) }, 1)
+            place(action(R.drawable.ic_quick, "Rápida", look.chip, look.ink, accent = Look.ORANGE, size = size) { showQuick(key) }, 2)
+        }
+        place(action(R.drawable.ic_phone, "Teléfono", look.chip, look.ink, size = size) {
+            send(Protocol.message(Protocol.OPEN) { put("key", key) })
+            done(key, closeAfter = true)
+        }, 3)
+        whole.addView(rail, LinearLayout.LayoutParams(size + look.px(40), ViewGroup.LayoutParams.MATCH_PARENT))
+
+        // The name on top, the words below.
+        val right = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(look.px(28), look.px(20), look.px(24), look.px(20))
+        }
+        whole.addView(right, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        right.addView(header(n, full = true))
+        right.addView(View(context).apply { setBackgroundColor(look.edge) },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, look.px(1).coerceAtLeast(1)).apply { topMargin = look.px(16); bottomMargin = look.px(14) })
 
         val body = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         val lines = n.lines
@@ -470,7 +560,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             body.addView(voiceRow(n))
         } else {
             lines.dropLast(1).takeLast(2).forEach { l ->
-                body.addView(text(said(n, l.sender, l.text), 24f * scale, look.faint), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = look.px(10) })
+                body.addView(text(said(n, l.sender, l.text), 23f * scale, look.faint), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = look.px(8) })
             }
             val last = lines.lastOrNull()
             val words = if (last != null) said(n, last.sender, last.text) else n.text
@@ -480,32 +570,29 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                 words.length > 220 -> 0.85f
                 else -> 1f
             }
-            body.addView(text(words, (44f * scale * fit).coerceAtLeast(32f), look.ink, bold = true).apply {
-                setLineSpacing(0f, 1.15f)
-            })
+            body.addView(text(words, (42f * scale * fit).coerceAtLeast(30f), look.ink, bold = true).apply {
+                setLineSpacing(0f, 1.12f)
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(4) })
         }
         // What doesn't fit scrolls with the finger; a small arrow that bobs says there is more.
-        val scroll = ScrollView(context).apply { addView(body); isVerticalScrollBarEnabled = false; isFillViewport = true }
+        val scroll = ScrollView(context).apply { addView(body); isVerticalScrollBarEnabled = false }
         val more = icon(R.drawable.ic_next, Look.ORANGE, 36, "Hay más texto").apply {
             rotation = 90f
+            background = look.oval(look.panel)
             visibility = View.GONE
         }
         val textBox = FrameLayout(context).apply {
-            addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            addView(more, FrameLayout.LayoutParams(look.px(44), look.px(44), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+            addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(more, FrameLayout.LayoutParams(look.px(48), look.px(48), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
         }
-        val maxH = (context.resources.displayMetrics.heightPixels * 0.52f).toInt()
-        c.addView(textBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = look.px(22); bottomMargin = look.px(26)
-        })
+        right.addView(textBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         scroll.post {
-            if (scroll.height <= maxH) return@post
-            scroll.layoutParams = scroll.layoutParams.apply { height = maxH }
+            if (!scroll.canScrollVertically(1)) return@post
             more.visibility = View.VISIBLE
             ObjectAnimator.ofFloat(more, View.TRANSLATION_Y, 0f, look.px(8).toFloat(), 0f).apply {
                 duration = 1000; repeatCount = ValueAnimator.INFINITE; start()
             }
-            scroll.setOnScrollChangeListener { v, _, y, _, _ ->
+            scroll.setOnScrollChangeListener { v, _, _, _, _ ->
                 val end = !v.canScrollVertically(1)
                 more.animate().alpha(if (end) 0f else 1f).setDuration(150).start()
             }
@@ -513,49 +600,58 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         body.alpha = 0f
         body.translationY = look.px(16).toFloat()
         body.animate().alpha(1f).translationY(0f).setStartDelay(if (fade) 0 else 300).setDuration(380).start()
-
-        val actions = row(Gravity.CENTER).apply { weightSum = 5f }
-        val listen = action(R.drawable.ic_speaker, "Escuchar", Look.ORANGE, Look.ON_ORANGE) {
-            if (speaker.speaking) speaker.stop() else speaker.read(n)
-        }
-        actions.addView(listen, weighted())
-        speaker.onSpeaking = { on -> beat(listen.getChildAt(0), on) }
-        if (n.canReply) {
-            actions.addView(action(R.drawable.ic_mic, "Responder", Look.BLUE, Look.ON_BLUE) { showReply(key) }, weighted())
-            actions.addView(action(R.drawable.ic_quick, "Rápida", look.chip, look.ink, accent = Look.ORANGE) { showQuick(key) }, weighted())
-        }
-        actions.addView(action(R.drawable.ic_phone, "Teléfono", look.chip, look.ink) {
-            send(Protocol.message(Protocol.OPEN) { put("key", key) })
-            done(key, closeAfter = true)
-        }, weighted())
-        actions.addView(action(R.drawable.ic_check, "Listo", look.chip, Look.GREEN) { done(key, closeAfter = false) }, weighted())
-        c.addView(actions)
     }
 
     /** "Ana: ..." in a group; just the text in a chat with one person. */
     private fun said(n: Notice, sender: String, text: String): String =
         if (sender.isNotBlank() && sender != n.title) "$sender: $text" else text
 
-    private fun header(n: Notice): View {
+    /**
+     * Who, and the small buttons. [full] (the message window) adds A− and A+, silencing this conversation and the
+     * green Listo, all in the same line.
+     */
+    private fun header(n: Notice, full: Boolean = false): View {
         val h = row(Gravity.CENTER_VERTICAL)
-        h.addView(avatar(n, 76), LinearLayout.LayoutParams(look.px(76), look.px(76)))
-        val names = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        names.addView(text(n.title.ifBlank { n.app }, 32f, look.ink, bold = true).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END })
-        names.addView(text("${n.app} · ${ago(n.time)}", 18f, look.soft))
-        h.addView(names, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(18) })
+        h.addView(avatar(n, 68), LinearLayout.LayoutParams(look.px(68), look.px(68)))
+        val names = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
+        names.addView(text(n.title.ifBlank { n.app }, 30f, look.ink, bold = true).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END; includeFontPadding = false })
+        names.addView(text("${n.app} · ${ago(n.time)}", 17f, look.soft).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(4) })
+        h.addView(names, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(16); marginEnd = look.px(10) })
+        fun gap() = h.addView(View(context).apply { setBackgroundColor(look.edge) },
+            LinearLayout.LayoutParams(look.px(1).coerceAtLeast(1), look.px(44)).apply { marginStart = look.px(10); marginEnd = look.px(10) })
+        fun smallAt(v: View, first: Boolean = false) = h.addView(v, LinearLayout.LayoutParams(look.px(64), look.px(64)).apply { if (!first) marginStart = look.px(10) })
+        if (full) {
+            smallAt(smallText("A−", "Letra más pequeña") { Settings.setTextScale(context, Settings.textScale(context) - 0.1f); showRead(n.key, fade = true) }, first = true)
+            smallAt(smallText("A+", "Letra más grande") { Settings.setTextScale(context, Settings.textScale(context) + 0.1f); showRead(n.key, fade = true) })
+            smallAt(small(R.drawable.ic_bell_off, "Silenciar esta conversación", tint = Look.PURPLE) { openMute(n) })
+        }
         val all = Inbox.all
         val at = all.indexOfFirst { it.key == n.key }
         if (all.size > 1) {
-            h.addView(small(R.drawable.ic_prev, "Anterior") { showRead(all[(at - 1 + all.size) % all.size].key, fade = true) })
-            val dots = row(Gravity.CENTER).apply { setPadding(look.px(10), 0, look.px(10), 0) }
+            if (full) gap()
+            smallAt(small(R.drawable.ic_prev, "Anterior") { showRead(all[(at - 1 + all.size) % all.size].key, fade = true) }, first = full)
+            val dots = row(Gravity.CENTER).apply { setPadding(look.px(6), 0, look.px(6), 0) }
             all.take(6).forEachIndexed { i, _ ->
                 val d = View(context).apply { background = look.round(if (i == at) Look.ORANGE else look.off, 5) }
-                dots.addView(d, LinearLayout.LayoutParams(look.px(if (i == at) 26 else 10), look.px(10)).apply { marginStart = look.px(4); marginEnd = look.px(4) })
+                dots.addView(d, LinearLayout.LayoutParams(look.px(if (i == at) 24 else 9), look.px(9)).apply { marginStart = look.px(3); marginEnd = look.px(3) })
             }
-            h.addView(dots)
-            h.addView(small(R.drawable.ic_next, "Siguiente") { showRead(all[(at + 1) % all.size].key, fade = true) })
+            h.addView(dots, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(6) })
+            smallAt(small(R.drawable.ic_next, "Siguiente") { showRead(all[(at + 1) % all.size].key, fade = true) })
         }
-        h.addView(small(R.drawable.ic_close, "Cerrar") { closePanel() }, LinearLayout.LayoutParams(look.px(64), look.px(64)).apply { marginStart = look.px(12) })
+        if (full) {
+            gap()
+            val ok = row(Gravity.CENTER).apply {
+                background = look.round(Look.GREEN, 32)
+                setPadding(look.px(16), 0, look.px(22), 0)
+                contentDescription = "Listo"
+                addView(icon(R.drawable.ic_check, Look.ON_GREEN, 30, null), LinearLayout.LayoutParams(look.px(30), look.px(30)))
+                addView(text("Listo", 20f, Look.ON_GREEN, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(8) })
+                setOnClickListener { done(n.key, closeAfter = false) }
+            }
+            h.addView(ok, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(64)))
+        }
+        smallAt(small(R.drawable.ic_close, "Cerrar") { closePanel() })
         return h
     }
 
@@ -595,7 +691,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         val n = Inbox.get(key) ?: return
         mode = Mode.REPLY
         speaker.stop()
-        c.removeAllViews()
+        fill(c, whole = false)
         val h = row(Gravity.CENTER_VERTICAL)
         h.addView(avatar(n, 56), LinearLayout.LayoutParams(look.px(56), look.px(56)))
         h.addView(text("→ ${n.title.ifBlank { n.app }}", 28f, look.ink, bold = true).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END },
@@ -651,7 +747,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         val c = card ?: return
         val n = Inbox.get(key) ?: return
         mode = Mode.QUICK
-        c.removeAllViews()
+        fill(c, whole = false)
         c.addView(header(n))
         c.addView(text("RESPUESTAS RÁPIDAS", 18f, look.soft, bold = true).apply { letterSpacing = 0.08f },
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(24); bottomMargin = look.px(14) })
@@ -691,13 +787,13 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         c.addView(back)
     }
 
-    /** Silence for a while, the arrival sound and reading aloud by itself. */
     /** Holding a bubble: silence that conversation for a while; below, the sound, reading aloud and the letters. */
     private fun openMute(n: Notice) {
         if (!allowed()) return
         val c = createPanel()
         mode = Mode.MUTE
         openKey = null
+        fill(c, whole = false)
         val h = row(Gravity.CENTER_VERTICAL)
         h.addView(avatar(n, 64), LinearLayout.LayoutParams(look.px(64), look.px(64)))
         val names = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
@@ -722,8 +818,10 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                 gravity = Gravity.CENTER
                 background = look.round(look.chip, 24, stroke = true)
                 contentDescription = "Silenciar $m minutos"
-                addView(text(label, 32f, look.ink, bold = true))
-                addView(text("min", 16f, look.soft, bold = true))
+                addView(text(label, 34f, look.ink, bold = true).apply { gravity = Gravity.CENTER; includeFontPadding = false },
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                addView(text("min", 16f, look.soft, bold = true).apply { gravity = Gravity.CENTER },
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
                 setOnClickListener { mute(System.currentTimeMillis() + m * 60_000L) }
             }
             grid.addView(b, LinearLayout.LayoutParams(0, look.px(100), 1f).apply { marginEnd = look.px(14) })
@@ -741,30 +839,6 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         c.addView(View(context).apply { setBackgroundColor(look.edge) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, look.px(1).coerceAtLeast(1)).apply { topMargin = look.px(22); bottomMargin = look.px(12) })
         c.addView(toggle(R.drawable.ic_bell, "Sonido al llegar", Settings.sound(context)) { Settings.setSound(context, it) })
         c.addView(toggle(R.drawable.ic_speaker, "Leer en voz alta solo", Settings.autoRead(context)) { Settings.setAutoRead(context, it) })
-        c.addView(textSize())
-    }
-
-    /** A− and A+: the size of the message's letters, shown as it changes. */
-    private fun textSize(): View {
-        val r = row(Gravity.CENTER_VERTICAL).apply { setPadding(look.px(6), look.px(10), look.px(6), look.px(10)) }
-        val sample = text("Aa", 30f * Settings.textScale(context), look.ink, bold = true)
-        r.addView(sample, LinearLayout.LayoutParams(look.px(90), ViewGroup.LayoutParams.WRAP_CONTENT))
-        r.addView(text("Tamaño del texto", 24f, look.ink, bold = true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(6) })
-        fun step(by: Float) {
-            Settings.setTextScale(context, Settings.textScale(context) + by)
-            sample.setTextSize(TypedValue.COMPLEX_UNIT_SP, look.sp(30f * Settings.textScale(context)))
-            sample.animate().scaleX(1.15f).scaleY(1.15f).setDuration(90).withEndAction { sample.animate().scaleX(1f).scaleY(1f).setDuration(120).start() }.start()
-        }
-        listOf("A−" to -0.1f, "A+" to 0.1f).forEachIndexed { i, (label, by) ->
-            val b = text(label, 26f, look.ink, bold = true).apply {
-                gravity = Gravity.CENTER
-                background = look.round(look.chip, 20, stroke = true)
-                contentDescription = if (by < 0) "Letra más pequeña" else "Letra más grande"
-                setOnClickListener { step(by) }
-            }
-            r.addView(b, LinearLayout.LayoutParams(look.px(88), look.px(64)).apply { if (i == 0) marginEnd = look.px(12) })
-        }
-        return r
     }
 
     /** "Listo": a green check grows, then the next conversation (or the panel closes). */
@@ -826,12 +900,11 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     }
 
     /** A big round button with one word under it. */
-    private fun action(res: Int, label: String, fill: Int, ink: Int, accent: Int? = null, onClick: () -> Unit): LinearLayout {
+    private fun action(res: Int, label: String, fill: Int, ink: Int, accent: Int? = null, size: Int = look.px(124), onClick: () -> Unit): LinearLayout {
         val col = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
+            gravity = Gravity.CENTER
         }
-        val size = look.px(124)
         val btn = FrameLayout(context).apply {
             background = if (fill == look.chip) look.round(fill, 62, stroke = true) else look.oval(fill)
             contentDescription = label
@@ -842,18 +915,29 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                 }.start()
                 onClick()
             }
-            addView(icon(res, accent ?: ink, 56, null), FrameLayout.LayoutParams(look.px(56), look.px(56), Gravity.CENTER))
+            val inner = (size * 0.45f).toInt()
+            addView(icon(res, accent ?: ink, 56, null).apply { minimumWidth = 0; minimumHeight = 0 }, FrameLayout.LayoutParams(inner, inner, Gravity.CENTER))
         }
         col.addView(btn, LinearLayout.LayoutParams(size, size))
-        col.addView(text(label, 18f, look.soft, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(10) })
+        col.addView(text(label, 16f, look.soft, bold = true).apply { includeFontPadding = false }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(8) })
         return col
     }
 
-    private fun small(res: Int, description: String, onClick: () -> Unit) = FrameLayout(context).apply {
+    private fun smallText(words: String, description: String, onClick: () -> Unit) = FrameLayout(context).apply {
         background = look.round(look.chip, 32, stroke = true)
         contentDescription = description
         setOnClickListener { onClick() }
-        addView(icon(res, look.ink, 28, null), FrameLayout.LayoutParams(look.px(28), look.px(28), Gravity.CENTER))
+        addView(text(words, 22f, look.ink, bold = true).apply { gravity = Gravity.CENTER; includeFontPadding = false },
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        layoutParams = LinearLayout.LayoutParams(look.px(64), look.px(64))
+    }
+
+    private fun small(res: Int, description: String, tint: Int? = null, onClick: () -> Unit) = FrameLayout(context).apply {
+        background = if (tint != null) look.round(android.graphics.Color.argb(40, android.graphics.Color.red(tint), android.graphics.Color.green(tint), android.graphics.Color.blue(tint)), 32)
+            else look.round(look.chip, 32, stroke = true)
+        contentDescription = description
+        setOnClickListener { onClick() }
+        addView(icon(res, tint ?: look.ink, 28, null), FrameLayout.LayoutParams(look.px(28), look.px(28), Gravity.CENTER))
         layoutParams = LinearLayout.LayoutParams(look.px(64), look.px(64))
     }
 
@@ -1018,3 +1102,23 @@ class Wave(context: Context, private val color: Int) : View(context) {
     }
 }
 
+/** The orange ring that fills around a bubble's photo while it is held; full, the silence window opens. */
+class HoldRing(private val centerX: Int, private val radius: Float, stroke: Float) : android.graphics.drawable.Drawable() {
+    private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = stroke; color = android.graphics.Color.argb(60, 255, 255, 255) }
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = stroke; color = Look.ORANGE; strokeCap = Paint.Cap.ROUND }
+    var progress = 0f
+        set(v) { field = v; invalidateSelf() }
+
+    override fun draw(canvas: Canvas) {
+        if (progress <= 0f) return
+        val cy = bounds.exactCenterY()
+        val r = android.graphics.RectF(centerX - radius, cy - radius, centerX + radius, cy + radius)
+        canvas.drawOval(r, track)
+        canvas.drawArc(r, -90f, 360f * progress, false, fill)
+    }
+
+    override fun setAlpha(alpha: Int) = Unit
+    override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) = Unit
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity() = PixelFormat.TRANSLUCENT
+}

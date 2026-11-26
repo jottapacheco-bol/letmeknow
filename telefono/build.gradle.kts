@@ -15,10 +15,27 @@ android {
         versionName = "1.0.0"
     }
 
+    // The fixed signature (the SIGNING_KEYSTORE secret, put in place by CI), so every version installs over the last.
+    val fixed = file(System.getProperty("user.home") + "/.android/debug.keystore")
+    signingConfigs {
+        create("fixed") {
+            storeFile = fixed
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = if (fixed.exists()) signingConfigs.getByName("fixed") else signingConfigs.getByName("debug")
         }
+    }
+
+    lint {
+        // The minutes of the free runner are few; the release check would add several.
+        checkReleaseBuilds = false
     }
 
     compileOptions {
