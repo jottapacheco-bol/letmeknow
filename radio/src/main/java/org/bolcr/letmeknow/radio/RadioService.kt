@@ -56,9 +56,11 @@ class RadioService : Service() {
         when (msg.optString("t")) {
             Protocol.ALL -> {
                 val list = msg.optJSONArray("list")
-                Inbox.replace((0 until (list?.length() ?: 0)).mapNotNull { runCatching { Notice.fromJson(list!!.getJSONObject(it)) }.getOrNull() })
+                val all = (0 until (list?.length() ?: 0)).mapNotNull { runCatching { Notice.fromJson(list!!.getJSONObject(it)) }.getOrNull() }
+                Settings.hearAll(this, all)
+                Inbox.replace(all)
             }
-            Protocol.POST -> msg.optJSONObject("n")?.let { runCatching { Notice.fromJson(it) }.getOrNull() }?.let { Inbox.put(it) }
+            Protocol.POST -> msg.optJSONObject("n")?.let { runCatching { Notice.fromJson(it) }.getOrNull() }?.let { Inbox.put(it, Settings.fresh(this, it)) }
             Protocol.REMOVE -> Inbox.remove(msg.optString("key"))
             Protocol.TONE -> runCatching {
                 val bytes = android.util.Base64.decode(msg.optString("sound"), android.util.Base64.DEFAULT)

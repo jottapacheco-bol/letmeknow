@@ -213,10 +213,9 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             addView(text("Al llegar un mensaje", 22f, look.ink, true))
             addView(switchRow(R.drawable.ic_bell, "Sonido al llegar", Settings.sound(this@MainActivity)) { Settings.setSound(this@MainActivity, it) })
-            addView(switchRow(R.drawable.ic_speaker, "Leer en voz alta solo", Settings.autoRead(this@MainActivity)) { Settings.setAutoRead(this@MainActivity, it) })
             addView(switchRow(R.drawable.ic_chat, "Anunciar: «Notificación nueva de…»", Settings.announce(this@MainActivity)) { Settings.setAnnounce(this@MainActivity, it) })
             addView(switchRow(R.drawable.ic_quick, "Decir cuántos mensajes sin leer", Settings.announceCount(this@MainActivity)) { Settings.setAnnounceCount(this@MainActivity, it) })
-            addView(text("«Leer en voz alta solo» es para las conversaciones que no tienen uno propio: cada una se cambia al sostener su burbuja. Si se lee solo, no hace falta el anuncio: ya dice de quién es. Con una ventana abierta solo se anuncia, y se lee al cerrarla.", 16f, look.soft, false),
+            addView(text("«Leer en voz alta solo» se escoge en cada conversación, al sostener su burbuja. Si se lee solo, no hace falta el anuncio: ya dice de quién es. Con una ventana abierta solo se anuncia, y se lee al cerrarla.", 16f, look.soft, false),
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(8) })
         }), spaced())
 

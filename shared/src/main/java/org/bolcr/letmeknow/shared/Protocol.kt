@@ -14,7 +14,8 @@ import java.io.ByteArrayOutputStream
  * Phone to radio: `hello`, `all` (every notification shown now, after hello), `post` (a new or changed one),
  * `remove` (it was read or dismissed on the phone), `pong`. Version 2 adds to a notification the picture, video
  * frame or audio that came in it (`media`, `video`, `length`, `audio`, `audioType`) and whether it came from the
- * work profile (`work`); an older radio ignores them.
+ * work profile (`work`); an older radio ignores them. Version 4 adds `newest`, when the newest message was written,
+ * so the radio announces only messages it hasn't heard yet.
  * Radio to phone: `hello`, `open` (do what touching the notification on the phone does), `reply` (answer the chat
  * with a text, dictated or quick), `ping`.
  */
@@ -24,7 +25,7 @@ object Protocol {
     /** How the phone is announced on the network (NSD / mDNS). */
     const val SERVICE_TYPE = "_letmeknow._tcp."
     const val SERVICE_NAME = "LetMeKnow"
-    const val VERSION = 3
+    const val VERSION = 4
 
     /** The radio pings this often, and gives up on a connection that said nothing for [SILENT_MS]. */
     const val PING_MS = 10_000L
@@ -75,6 +76,11 @@ data class Notice(
     val audioType: String = "",
     /** It came from the phone's work profile (version 2). */
     val work: Boolean = false,
+    /**
+     * When the newest message of it was written, by the phone's clock (version 4): the same when the app shows the
+     * notification again without anything new. 0 if unknown.
+     */
+    val newest: Long = 0,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("key", key)
@@ -92,6 +98,7 @@ data class Notice(
             media?.let { put("media", Images.encode(it, photo = true)) }
             if (video) put("video", true)
             if (work) put("work", true)
+            if (newest > 0) put("newest", newest)
             if (length.isNotEmpty()) put("length", length)
             audio?.let { put("audio", Base64.encodeToString(it, Base64.NO_WRAP)).put("audioType", audioType) }
         }
@@ -122,6 +129,7 @@ data class Notice(
                 },
                 audioType = o.optString("audioType"),
                 work = o.optBoolean("work"),
+                newest = o.optLong("newest"),
             )
         }
     }

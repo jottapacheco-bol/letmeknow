@@ -1,5 +1,11 @@
 # LetMeKnow del radio
 
+## 1.0.7
+
+- Al conectarse con el teléfono, las notificaciones que ya estaban salen como burbujas, sin sonar ni anunciarse. Solo se anuncian los mensajes nuevos.
+- Un mensaje ya oído no se vuelve a anunciar aunque el teléfono lo muestre otra vez, ni después de apagar el radio.
+- «Leer en voz alta solo» ya no está en los ajustes del radio: es solo de cada conversación (se escoge al sostener su burbuja) y empieza apagado.
+
 ## 1.0.6
 
 - «Leer en voz alta solo» se escoge en cada conversación al sostener su burbuja. El de Ajustes queda para las que no tienen uno propio.
