@@ -1013,7 +1013,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
      * only announced and read when the window closes; with "anunciar" just who sent it.
      */
     private fun arrive(n: Notice) {
-        val whole = Settings.autoRead(context)
+        val whole = Settings.autoRead(context, n)
         when {
             whole && panel != null && openKey != n.key -> { later.add(n.key); queue.add(Turn(n.key, whole = false)) }
             whole -> queue.add(Turn(n.key, whole = true))
@@ -1453,7 +1453,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         paintChips()
         c.addView(voiceLine, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = look.px(6) })
         c.addView(toggle(R.drawable.ic_bell, "Sonido al llegar", Settings.sound(context)) { Settings.setSound(context, it) })
-        c.addView(toggle(R.drawable.ic_speaker, "Leer en voz alta solo", Settings.autoRead(context)) { Settings.setAutoRead(context, it) })
+        // Only this conversation; the others keep theirs (or the one in the radio's settings).
+        c.addView(toggle(R.drawable.ic_speaker, "Leer en voz alta solo", Settings.autoRead(context, n)) { Settings.setAutoRead(context, n, it) })
     }
 
     /** "Listo": a green check grows, then the next conversation (or the panel closes). */

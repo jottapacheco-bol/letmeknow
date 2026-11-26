@@ -1,5 +1,9 @@
 # LetMeKnow del radio
 
+## 1.0.6
+
+- «Leer en voz alta solo» se escoge en cada conversación al sostener su burbuja. El de Ajustes queda para las que no tienen uno propio.
+
 ## 1.0.5
 
 - La ventana abierta ya no se cierra sola si el mensaje se lee en el teléfono (al abrir WhatsApp): queda igual hasta que usted la cierra o pasa a otro.
