@@ -4,10 +4,12 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.Drawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -46,8 +48,14 @@ class MainActivity : Activity() {
     private lateinit var listenerState: TextView
     private lateinit var overlayState: TextView
     private lateinit var batteryState: TextView
+    private var networkState: TextView? = null
     private lateinit var radioState: TextView
     private lateinit var adapter: Apps
+
+    private companion object {
+        const val LOCAL_API = 37
+        const val LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK"
+    }
 
     private data class App(val pkg: String, val label: String, val icon: Drawable)
 
@@ -72,6 +80,10 @@ class MainActivity : Activity() {
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
         }
         batteryState = step(head, "3. Seguir funcionando con la pantalla apagada", "Permitir") { askBattery() }
+        if (Build.VERSION.SDK_INT >= LOCAL_API) {
+            networkState = step(head, "4. Ver el radio en el Wi-Fi", "Permitir") { requestPermissions(arrayOf(LOCAL_NETWORK), 7) }
+            if (!localNetworkOn()) requestPermissions(arrayOf(LOCAL_NETWORK), 7)
+        }
 
         radioState = Ui.text(c, "", 17f, ink)
         head.add(radioState, top = Ui.dp(c, 22))
@@ -136,6 +148,15 @@ class MainActivity : Activity() {
         return state
     }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (localNetworkOn()) Server.announceAgain(this)
+    }
+
+    /** Android 17 blocks the radio on the Wi-Fi until "local network" is allowed. */
+    private fun localNetworkOn() =
+        Build.VERSION.SDK_INT < LOCAL_API || checkSelfPermission(LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED
+
     override fun onResume() {
         super.onResume()
         refresh()
@@ -151,6 +172,7 @@ class MainActivity : Activity() {
         show(overlayState, Settings.canDrawOverlays(this), "Listo", "Falta: para «Ver en el teléfono»")
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         show(batteryState, pm.isIgnoringBatteryOptimizations(packageName), "Listo", "Recomendado")
+        networkState?.let { show(it, localNetworkOn(), "Listo", "Falta: sin esto no encuentra el radio") }
         val radio = Server.radio
         radioState.text = if (radio != null) "✅ Radio conectado ($radio)"
         else "⏳ Esperando al radio… (este teléfono: " + Server.addresses().joinToString(", ").ifEmpty { "sin Wi-Fi" } + ")"

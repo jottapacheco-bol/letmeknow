@@ -31,6 +31,7 @@ object Server {
     @Volatile private var client: Socket? = null
     @Volatile private var writer: BufferedWriter? = null
     private var nsd: NsdManager? = null
+    private var registration: NsdManager.RegistrationListener? = null
 
     /** Who is connected, for the main screen. Null while waiting for the radio. */
     @Volatile var radio: String? = null
@@ -124,21 +125,29 @@ object Server {
     private fun announce(context: Context) {
         val manager = context.getSystemService(Context.NSD_SERVICE) as? NsdManager ?: return
         nsd = manager
+        registration?.let { old -> runCatching { manager.unregisterService(old) } }
         val info = NsdServiceInfo().apply {
             serviceName = Protocol.SERVICE_NAME
             serviceType = Protocol.SERVICE_TYPE
             port = Protocol.PORT
         }
         try {
-            manager.registerService(info, NsdManager.PROTOCOL_DNS_SD, object : NsdManager.RegistrationListener {
+            val listener = object : NsdManager.RegistrationListener {
                 override fun onServiceRegistered(i: NsdServiceInfo) = Unit
                 override fun onRegistrationFailed(i: NsdServiceInfo, code: Int) { Log.w(TAG, "NSD failed: $code") }
                 override fun onServiceUnregistered(i: NsdServiceInfo) = Unit
                 override fun onUnregistrationFailed(i: NsdServiceInfo, code: Int) = Unit
-            })
+            }
+            registration = listener
+            manager.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener)
         } catch (e: Exception) {
             Log.w(TAG, "NSD not available", e)
         }
+    }
+
+    /** Says the phone's name on the Wi-Fi again, after the local network was allowed. */
+    fun announceAgain(context: Context) {
+        if (started) main.post { announce(context.applicationContext) }
     }
 
     /** The phone's own addresses on Wi-Fi or its hotspot, shown on the main screen to help when something fails. */
