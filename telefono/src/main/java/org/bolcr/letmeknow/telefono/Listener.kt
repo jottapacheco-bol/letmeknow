@@ -41,6 +41,8 @@ class Listener : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        // No radio: nothing is prepared. When it connects it gets everything shown at that moment.
+        if (Server.radio == null) return
         val notice = toNotice(sbn) ?: return
         val sig = notice.title + "\u0000" + notice.text + "\u0000" + notice.lines.size
         if (sent[sbn.key] == sig) return
