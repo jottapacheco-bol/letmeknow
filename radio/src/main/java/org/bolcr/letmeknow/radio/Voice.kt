@@ -64,32 +64,54 @@ class Speaker(context: Context) {
         }.apply { isDaemon = true }.start()
     }
 
-    private fun play(file: java.io.File): Boolean = try {
+    private val audio = app.getSystemService(android.media.AudioManager::class.java)
+    private val voiceAttributes = AudioAttributes.Builder()
+        // Like the navigation's voice: the music goes down while it reads.
+        .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+        .build()
+    /** Asked while it reads, so the radio lowers the music and lets the voice through; given back at the end. */
+    private val focus = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+        .setAudioAttributes(voiceAttributes)
+        .build()
+
+    private fun play(file: java.io.File): Boolean {
         val p = MediaPlayer()
-        p.setAudioAttributes(AudioAttributes.Builder()
-            // Like the navigation's voice: the music goes down while it reads.
-            .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .build())
-        p.setDataSource(file.path)
-        p.setOnCompletionListener { it.release(); if (player === it) player = null; onSpeaking(false) }
-        p.prepare()
-        p.start()
-        player = p
-        true
-    } catch (e: Exception) {
-        false
+        return try {
+            p.setAudioAttributes(voiceAttributes)
+            p.setDataSource(file.path)
+            p.setOnCompletionListener { finished(it) }
+            // A player that breaks halfway is let go too, so the next reading starts clean.
+            p.setOnErrorListener { mp, _, _ -> finished(mp); true }
+            p.prepare()
+            runCatching { audio.requestAudioFocus(focus) }
+            p.start()
+            player = p
+            true
+        } catch (e: Exception) {
+            // Never left open: a radio has only so many players, and once they are used up it goes silent.
+            p.release()
+            false
+        }
+    }
+
+    private fun finished(p: MediaPlayer) {
+        runCatching { p.release() }
+        if (player === p) player = null
+        runCatching { audio.abandonAudioFocusRequest(focus) }
+        onSpeaking(false)
     }
 
     private fun local(text: String) {
         if (!ready) { pending = text; return }
-        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "letmeknow")
+        if (tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "letmeknow") != TextToSpeech.SUCCESS) onSpeaking(false)
     }
 
     fun stop() {
         turn++
-        player?.let { runCatching { it.stop() }; it.release() }
+        player?.let { runCatching { it.stop() }; runCatching { it.release() } }
         player = null
+        runCatching { audio.abandonAudioFocusRequest(focus) }
         pending = null
         if (ready) tts.stop()
         onSpeaking(false)
@@ -97,10 +119,15 @@ class Speaker(context: Context) {
 
     val speaking: Boolean get() = player != null || (ready && tts.isSpeaking)
 
+    /** The arrival sound: one, reused. A new one each time leaves players open until the radio runs out. */
+    private var ring: android.media.Ringtone? = null
+
     fun chime() {
         try {
+            ring?.let { runCatching { it.stop() } }
             val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION) ?: return
-            RingtoneManager.getRingtone(app, uri)?.apply {
+            ring = ring ?: RingtoneManager.getRingtone(app, uri)
+            ring?.apply {
                 audioAttributes = AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -187,8 +214,13 @@ class CloudVoice(private val context: Context) {
     /** Levite's voice: es-US Chirp 3 HD, Charon. */
     var voice = "es-US-Chirp3-HD-Charon"
 
-    /** [text] said, as an MP3 in the cache (the same text is not asked twice), or null. */
-    fun say(text: String): java.io.File? {
+    /**
+     * [text] said, as an MP3 in the cache (the same text is not asked twice), or null. A connection that the phone's
+     * hotspot dropped is tried once more, fresh.
+     */
+    fun say(text: String): java.io.File? = ask(text) ?: if (problem?.startsWith("Sin internet") == true) ask(text) else null
+
+    private fun ask(text: String): java.io.File? {
         val key = BuildConfig.TTS_KEY_LEVITE
         if (key.isBlank()) { problem = "Esta versión no trae la clave de la voz"; return null }
         val name = java.security.MessageDigest.getInstance("SHA-256").digest((voice + "|" + text).toByteArray())
@@ -208,6 +240,9 @@ class CloudVoice(private val context: Context) {
             c.requestMethod = "POST"
             c.doOutput = true
             c.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            // No reused connections: one left half-open by the hotspot made every later reading fail.
+            c.setRequestProperty("Connection", "close")
+            c.useCaches = false
             c.setRequestProperty("X-Goog-Api-Key", key)
             c.setRequestProperty("X-Android-Package", context.packageName)
             sha1()?.let { c.setRequestProperty("X-Android-Cert", it) }
