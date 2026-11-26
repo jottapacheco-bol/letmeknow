@@ -463,6 +463,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             flags = flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
         })
         root.requestFocus()
+        listenHome()
         panel = root
         card = c
         // It grows out of the bubbles' corner.
@@ -478,6 +479,26 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         return c
     }
 
+    /** The radio's home (and recent apps) button: no app hears it, but Android tells everyone it closes its menus. */
+    private var home: android.content.BroadcastReceiver? = null
+
+    private fun listenHome() {
+        val r = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context, i: android.content.Intent) {
+                val why = i.getStringExtra("reason")
+                if (why == "homekey" || why == "recentapps") main.post { closePanel() }
+            }
+        }
+        @Suppress("DEPRECATION")
+        val filter = android.content.IntentFilter(android.content.Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 33) context.registerReceiver(r, filter, Context.RECEIVER_EXPORTED)
+            else context.registerReceiver(r, filter)
+            home = r
+        } catch (_: Exception) {
+        }
+    }
+
     fun openPanel(key: String) {
         if (!allowed()) return
         createPanel()
@@ -486,6 +507,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
 
     fun closePanel(animated: Boolean = true) {
         val root = panel ?: return
+        home?.let { runCatching { context.unregisterReceiver(it) } }
+        home = null
         stopAudio()
         big = null
         dictation?.stop()
