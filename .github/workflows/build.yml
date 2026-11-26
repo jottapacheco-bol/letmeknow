@@ -1,7 +1,8 @@
 name: Android
 
-# The same build as Levite (bol-levite): on the pastor's computer, no Android Studio. Each version on main leaves
-# its two APKs in D:\Levite\Compilados; each pull request leaves them in D:\Levite\Revisados to try before merging.
+# On GitHub's free runner (the pastor chose it, 26 Nov 2026). Each version on main is published as a Release with
+# its two APKs; each pull request updates a pre-release "pr-<number>" to try it before merging. Nothing is uploaded
+# as an Actions artifact (the account's storage is full).
 on:
   push:
     branches: [main]
@@ -10,50 +11,82 @@ on:
 
 concurrency:
   group: android-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
 
 jobs:
   android:
     name: APKs del teléfono y del radio
-    # The pastor's computer (a self-hosted runner registered for this repository): its minutes are free.
-    runs-on: [self-hosted, Windows]
-    defaults:
-      run:
-        shell: 'powershell -NoProfile -ExecutionPolicy Bypass -Command ". ''{0}''; exit $LASTEXITCODE"'
-    env:
-      RUNNER_TRACKING_ID: ""
-      GRADLE_FLAGS: -Dorg.gradle.daemon.idletimeout=7200000
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      # The runner's service account differs from the folder's owner: trust it, as Levite does.
-      - name: Trust the work folder
-        run: |
-          $dir = '${{ github.workspace }}'.Replace('\', '/')
-          if (-not ((git config --system --get-all safe.directory) -contains $dir)) { git config --system --add safe.directory $dir }
-          foreach ($lock in @('.git\config.lock', '.git\index.lock', '.git\shallow.lock')) {
-            $path = Join-Path '${{ github.workspace }}' $lock
-            if (Test-Path $path) { Remove-Item -Force $path }
-          }
-          exit 0
       - uses: actions/checkout@v7
-        with:
-          clean: false
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 21
-      - run: ./gradlew.bat $env:GRADLE_FLAGS assembleDebug
-      - name: Copy the APKs
+      - uses: gradle/actions/setup-gradle@v5
+      # Always the same signature, so each new version installs over the last one. The key is the repository's
+      # secret SIGNING_KEYSTORE (the keystore in base64, debug passwords); without it the APKs still build, but
+      # with a new signature each time.
+      - name: Signature
+        env:
+          SIGNING_KEYSTORE: ${{ secrets.SIGNING_KEYSTORE }}
         run: |
-          $phone = [regex]::Match((Get-Content telefono/build.gradle.kts -Raw), 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
-          $radio = [regex]::Match((Get-Content radio/build.gradle.kts -Raw), 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
-          if ('${{ github.event_name }}' -eq 'pull_request') {
-            $dest = 'D:\Levite\Revisados'
-            $tag = '-pr${{ github.event.pull_request.number }}'
-          } else {
-            $dest = 'D:\Levite\Compilados'
-            $tag = ''
-          }
-          New-Item -ItemType Directory -Force $dest | Out-Null
-          Copy-Item telefono/build/outputs/apk/debug/telefono-debug.apk "$dest\LetMeKnow-Telefono-$phone$tag.apk" -Force -ErrorAction Stop
-          Copy-Item radio/build/outputs/apk/debug/radio-debug.apk "$dest\LetMeKnow-Radio-$radio$tag.apk" -Force -ErrorAction Stop
-          "Copied LetMeKnow-Telefono-$phone$tag.apk and LetMeKnow-Radio-$radio$tag.apk to $dest"
+          mkdir -p ~/.android
+          if [ -n "$SIGNING_KEYSTORE" ]; then
+            echo "$SIGNING_KEYSTORE" | base64 -d > ~/.android/debug.keystore
+          else
+            echo "::warning::Falta el secreto SIGNING_KEYSTORE: estas APK no se instalan encima de las anteriores."
+          fi
+      - name: Build
+        env:
+          TTS_KEY_LEVITE: ${{ secrets.TTS_KEY_LEVITE }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+      - name: Publish the APKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          phone=$(grep -oP 'versionName\s*=\s*"\K[^"]+' telefono/build.gradle.kts)
+          radio=$(grep -oP 'versionName\s*=\s*"\K[^"]+' radio/build.gradle.kts)
+          mkdir -p out
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            tag="pr-${{ github.event.pull_request.number }}"
+            sha="${{ github.event.pull_request.head.sha }}"
+            suffix="-$tag"
+          else
+            tag="v$radio-telefono-$phone"
+            sha="${{ github.sha }}"
+            suffix=""
+          fi
+          cp telefono/build/outputs/apk/debug/telefono-debug.apk "out/LetMeKnow-Telefono-$phone$suffix.apk"
+          cp radio/build/outputs/apk/debug/radio-debug.apk "out/LetMeKnow-Radio-$radio$suffix.apk"
+          # A pull request's pre-release is made again on each push, at its newest code.
+          gh release delete "$tag" --cleanup-tag -y 2>/dev/null || true
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            gh release create "$tag" out/*.apk --target "$sha" --prerelease \
+              --title "Prueba del PR #${{ github.event.pull_request.number }}" \
+              --notes "Para probar antes de unir: LetMeKnow del teléfono $phone y del radio $radio. ${{ github.event.pull_request.html_url }}"
+          else
+            gh release create "$tag" out/*.apk --target "$sha" --latest \
+              --title "LetMeKnow: radio $radio, teléfono $phone" \
+              --notes-file <(printf '## Radio\n\n'; sed -n '3,/^## /p' radio/CHANGELOG.md | sed '$d'; printf '\n## Teléfono\n\n'; sed -n '3,/^## /p' telefono/CHANGELOG.md | sed '$d')
+          fi
+          echo "APKs: https://github.com/${{ github.repository }}/releases/tag/$tag"
+      # Only the last 3 versions of main are kept; a merged or closed pull request's pre-release goes with it.
+      - name: Tidy the releases
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 100 --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease | not)] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' |
+            while read -r t; do gh release delete "$t" --cleanup-tag -y; done
+          for t in $(gh release list --limit 100 --json tagName --jq '.[].tagName | select(startswith("pr-"))'); do
+            state=$(gh pr view "${t#pr-}" --json state --jq .state 2>/dev/null || echo OPEN)
+            if [ "$state" != "OPEN" ]; then gh release delete "$t" --cleanup-tag -y; fi
+          done

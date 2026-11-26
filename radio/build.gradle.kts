@@ -23,7 +23,9 @@ android {
         versionCode = 1
         versionName = "1.0.0"
         // Google's voice (Chirp 3 HD), the key Levite uses for its voices. Empty: the radio's own voice reads.
-        buildConfigField("String", "TTS_KEY_LEVITE", "\"${keys.getProperty("TTS_KEY_LEVITE", "").trim()}\"")
+        // On GitHub it comes from the repository's secret of the same name.
+        val ttsKey = keys.getProperty("TTS_KEY_LEVITE") ?: providers.environmentVariable("TTS_KEY_LEVITE").orNull ?: ""
+        buildConfigField("String", "TTS_KEY_LEVITE", "\"${ttsKey.trim()}\"")
     }
     buildFeatures {
         buildConfig = true
