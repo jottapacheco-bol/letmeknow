@@ -1,5 +1,9 @@
 # LetMeKnow del radio
 
+## 1.0.5
+
+- La ventana abierta ya no se cierra sola si el mensaje se lee en el teléfono (al abrir WhatsApp): queda igual hasta que usted la cierra o pasa a otro.
+
 ## 1.0.4
 
 - El número de la bolita ya no sale cortado, y el borde de la burbuja queda liso (antes se veía pixelado).

@@ -1,5 +1,9 @@
 # LetMeKnow del teléfono
 
+## 1.0.2
+
+- Responder o abrir desde el radio sigue funcionando aunque el mensaje ya se haya leído en el teléfono.
+
 ## 1.0.1
 
 - Manda al radio el tono de notificación del teléfono, para que suene igual.

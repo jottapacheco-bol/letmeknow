@@ -51,6 +51,8 @@ class Listener : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
+        // The radio may still show it (its window stays open): answering or opening it must still work.
+        synchronized(gone) { gone[sbn.key] = sbn }
         if (sent.remove(sbn.key) != null) Server.send(Protocol.message(Protocol.REMOVE) { put("key", sbn.key) })
     }
 
@@ -72,7 +74,7 @@ class Listener : NotificationListenerService() {
 
     /** Does what touching the notification on the phone does: usually opens the chat in WhatsApp. */
     private fun open(key: String) {
-        val sbn = try { activeNotifications?.firstOrNull { it.key == key } } catch (e: Exception) { null }
+        val sbn = find(key)
         val intent = sbn?.notification?.contentIntent
         if (intent == null) {
             // Already read on the phone, or a test: open the app itself.
@@ -107,7 +109,7 @@ class Listener : NotificationListenerService() {
     /** WhatsApp's "Responder": the dictated or quick text goes back as if typed in the notification. */
     private fun reply(key: String, text: String) {
         if (text.isBlank()) return
-        val sbn = try { activeNotifications?.firstOrNull { it.key == key } } catch (e: Exception) { null } ?: return
+        val sbn = find(key) ?: return
         val action = replyAction(sbn.notification) ?: return
         val inputs = action.remoteInputs ?: return
         val results = Bundle()
@@ -183,6 +185,15 @@ class Listener : NotificationListenerService() {
             emptyList()
         }
     }
+
+    /** The last notifications taken away (opening WhatsApp on the phone clears them), by key. */
+    private val gone = object : LinkedHashMap<String, StatusBarNotification>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, StatusBarNotification>?) = size > 10
+    }
+
+    private fun find(key: String): StatusBarNotification? =
+        (try { activeNotifications?.firstOrNull { it.key == key } } catch (e: Exception) { null })
+            ?: synchronized(gone) { gone[key] }
 
     private class Media(
         val picture: Bitmap? = null, val video: Boolean = false, val length: String = "",
