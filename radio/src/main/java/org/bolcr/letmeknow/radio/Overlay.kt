@@ -137,7 +137,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             orientation = LinearLayout.VERTICAL
             clipChildren = false
             clipToPadding = false
-            val p = look.px(14)
+            val p = look.px(26)
             setPadding(p, p, p, p)
         }
         val params = overlayParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -157,7 +157,10 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             background = look.round(look.glass, 42, stroke = true)
-            elevation = look.px(8).toFloat()
+            // A deep, dark shadow: the bubble floats apart from everything behind it.
+            elevation = look.px(18).toFloat()
+            outlineAmbientShadowColor = android.graphics.Color.BLACK
+            outlineSpotShadowColor = android.graphics.Color.BLACK
             setPadding(look.px(10), 0, look.px(12), 0)
             contentDescription = "${n.title}, ${n.app}"
         }
