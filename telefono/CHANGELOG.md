@@ -1,5 +1,9 @@
 # LetMeKnow del teléfono
 
+## 1.0.3
+
+- Le dice al radio cuándo se escribió el último mensaje, para que no vuelva a anunciar los que ya se oyeron. Hay que poner también el radio 1.0.7.
+
 ## 1.0.2
 
 - Responder o abrir desde el radio sigue funcionando aunque el mensaje ya se haya leído en el teléfono.

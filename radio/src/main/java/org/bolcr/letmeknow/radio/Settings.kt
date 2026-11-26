@@ -19,8 +19,6 @@ object Settings {
     fun setSound(c: Context, v: Boolean) = prefs(c).edit().putBoolean("sound", v).apply()
 
     /** Read every new message aloud by itself. Off by default. */
-    fun autoRead(c: Context): Boolean = prefs(c).getBoolean("autoRead", false)
-    fun setAutoRead(c: Context, v: Boolean) = prefs(c).edit().putBoolean("autoRead", v).apply()
 
     /** Say "Notificación nueva de …" when one arrives and is not read whole. Off by default. */
     fun announce(c: Context): Boolean = prefs(c).getBoolean("announce", false)
@@ -91,6 +89,46 @@ object Settings {
         foreverIds = list.map { it.id }.toSet()
         voices = flags(c, "voices")
         reads = flags(c, "reads")
+        heard = try {
+            val o = org.json.JSONObject(prefs(c).getString("heard", "{}"))
+            o.keys().asSequence().associateWithTo(LinkedHashMap()) { o.optString(it) }
+        } catch (e: Exception) {
+            LinkedHashMap()
+        }
+    }
+
+    /**
+     * The newest message already heard of each conversation, kept after the radio is turned off: the phone shows
+     * old notifications again (when the radio connects, when WhatsApp reposts them) and those are not announced.
+     */
+    private var heard = LinkedHashMap<String, String>()
+
+    private fun mark(n: org.bolcr.letmeknow.shared.Notice): String =
+        if (n.newest > 0) "t${n.newest}" else "x" + (n.lines.lastOrNull()?.text ?: n.text)
+
+    /** Whether [n] brings a message not heard before; from now on it counts as heard. */
+    fun fresh(c: Context, n: org.bolcr.letmeknow.shared.Notice): Boolean {
+        val id = conversation(n)
+        val m = mark(n)
+        val before = heard[id]
+        if (before == m) return false
+        val newer = before == null || !before.startsWith("t") || !m.startsWith("t") ||
+            n.newest > (before.drop(1).toLongOrNull() ?: 0)
+        if (newer) remember(c, mapOf(id to m))
+        return newer
+    }
+
+    /** Everything the phone shows when the radio connects: shown as bubbles, not announced. */
+    fun hearAll(c: Context, list: List<org.bolcr.letmeknow.shared.Notice>) {
+        remember(c, list.associate { conversation(it) to mark(it) })
+    }
+
+    private fun remember(c: Context, marks: Map<String, String>) {
+        marks.forEach { (k, v) -> heard.remove(k); heard[k] = v }
+        while (heard.size > 300) heard.remove(heard.keys.first())
+        val o = org.json.JSONObject()
+        heard.forEach { (k, v) -> o.put(k, v) }
+        prefs(c).edit().putString("heard", o.toString()).apply()
     }
 
     private fun flags(c: Context, name: String): Map<String, Boolean> = try {
@@ -133,10 +171,10 @@ object Settings {
         saveFlags(c, "voices", voices)
     }
 
-    /** Whether each conversation is read aloud by itself when it arrives; the others follow [autoRead]. */
+    /** The conversations read aloud by themselves when a message arrives (chosen one by one); the others are not. */
     @Volatile private var reads: Map<String, Boolean> = emptyMap()
 
-    fun autoRead(c: Context, n: org.bolcr.letmeknow.shared.Notice): Boolean = reads[conversation(n)] ?: autoRead(c)
+    fun autoRead(n: org.bolcr.letmeknow.shared.Notice): Boolean = reads[conversation(n)] ?: false
 
     fun setAutoRead(c: Context, n: org.bolcr.letmeknow.shared.Notice, on: Boolean) {
         reads = reads + (conversation(n) to on)

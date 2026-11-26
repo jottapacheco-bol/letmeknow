@@ -171,6 +171,7 @@ class Listener : NotificationListenerService() {
             audio = m.audio,
             audioType = m.audioType,
             work = work,
+            newest = all.lastOrNull()?.timestamp?.takeIf { it > 0 } ?: n.`when`.takeIf { it > 0 } ?: 0,
         )
     }
 

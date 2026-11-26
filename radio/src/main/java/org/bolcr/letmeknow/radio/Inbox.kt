@@ -18,9 +18,19 @@ object Inbox {
 
     fun count(key: String): Int = (counts[key] ?: 0).coerceAtLeast(1)
 
-    /** A new or updated notification: it moves to the top and its number goes up. */
-    fun put(n: Notice) {
+    /**
+     * A new or updated notification: it moves to the top and its number goes up. Not [fresh] (nothing new in it, the
+     * phone only showed it again): it is updated where it is, quietly.
+     */
+    fun put(n: Notice, fresh: Boolean = true) {
         val before = get(n.key)
+        if (!fresh) {
+            val at = notices.indexOfFirst { it.key == n.key }
+            if (at >= 0) notices[at] = n else { notices.add(n); notices.sortByDescending { it.time } }
+            if (n.key !in counts) counts[n.key] = 0
+            changed(null)
+            return
+        }
         notices.removeAll { it.key == n.key }
         notices.add(0, n)
         val added = if (before == null) n.lines.size.coerceAtLeast(1) else 1
