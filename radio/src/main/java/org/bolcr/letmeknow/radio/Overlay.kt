@@ -52,6 +52,13 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     private var card: LinearLayout? = null
     /** The conversation open in the panel. */
     private var openKey: String? = null
+    /**
+     * The conversation the window shows, kept even if the phone takes its notification away (opening WhatsApp on
+     * the phone clears them): the window stays as it was until the driver closes it or moves on.
+     */
+    private var kept: Notice? = null
+
+    private fun find(key: String): Notice? = Inbox.get(key) ?: kept?.takeIf { it.key == key }
     private var dictation: Dictation? = null
     private var pulse: ObjectAnimator? = null
 
@@ -103,7 +110,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         val open = openKey
         if (open != null) {
             when {
-                Inbox.get(open) == null -> showNextOrClose()
+                // Gone from the phone (read there): the window keeps showing it, nothing closes by itself.
+                Inbox.get(open) == null -> Unit
                 arrived?.key == open && mode == Mode.READ -> showRead(open, fade = false)
             }
         }
@@ -624,6 +632,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         speaker.stop()
         openKey?.let { if (Inbox.get(it) != null) Inbox.seen(it) }
         openKey = null
+        kept = null
         panel = null
         card = null
         if (animated) {
@@ -657,7 +666,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
      */
     private fun showRead(key: String, fade: Boolean) {
         val c = card ?: return
-        val n = Inbox.get(key) ?: return closePanel()
+        val n = find(key) ?: return closePanel()
+        kept = n
         mode = Mode.READ
         openKey = key
         dictation?.stop()
@@ -1121,7 +1131,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             if (mp.isPlaying) mp.pause()
             mp.seekTo(0)
             mp.setOnCompletionListener(null)
-            if (key != null && Inbox.get(key.substringBeforeLast('#')) != null) {
+            if (key != null && find(key.substringBeforeLast('#')) != null) {
                 ready?.second?.let { runCatching { it.release() } }
                 ready = key to mp
                 return
@@ -1242,7 +1252,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     /** Dictating the answer: a big microphone with rings, the words as they are said, and send. */
     private fun showReply(key: String) {
         val c = card ?: return
-        val n = Inbox.get(key) ?: return
+        val n = find(key) ?: return
         mode = Mode.REPLY
         speaker.stop()
         stopAudio()
@@ -1301,7 +1311,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     /** Four answers of one touch. */
     private fun showQuick(key: String) {
         val c = card ?: return
-        val n = Inbox.get(key) ?: return
+        val n = find(key) ?: return
         mode = Mode.QUICK
         fill(c, whole = false)
         c.addView(header(n))
