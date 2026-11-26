@@ -81,6 +81,12 @@ object Settings {
         }.filter { it.id.isNotEmpty() }
         forever = list
         foreverIds = list.map { it.id }.toSet()
+        voices = try {
+            val o = org.json.JSONObject(prefs(c).getString("voices", "{}"))
+            o.keys().asSequence().associateWith { o.optBoolean(it) }
+        } catch (e: Exception) {
+            emptyMap()
+        }
     }
 
     private fun saveForever(c: Context, list: List<Forever>) {
@@ -99,6 +105,22 @@ object Settings {
     }
 
     fun hearAgain(c: Context, id: String) = saveForever(c, forever.filter { it.id != id })
+
+    /** The voice that reads each conversation: true a woman's, false a man's; the others take [femaleVoice]. */
+    @Volatile private var voices: Map<String, Boolean> = emptyMap()
+
+    fun female(c: Context, n: org.bolcr.letmeknow.shared.Notice): Boolean = voices[conversation(n)] ?: femaleVoice(c)
+
+    fun setFemale(c: Context, n: org.bolcr.letmeknow.shared.Notice, female: Boolean) {
+        voices = voices + (conversation(n) to female)
+        val o = org.json.JSONObject()
+        voices.forEach { (k, v) -> o.put(k, v) }
+        prefs(c).edit().putString("voices", o.toString()).apply()
+    }
+
+    /** The voice for conversations without their own: a man's (Charon, as Levite) unless chosen otherwise. */
+    fun femaleVoice(c: Context): Boolean = prefs(c).getBoolean("femaleVoice", false)
+    fun setFemaleVoice(c: Context, v: Boolean) = prefs(c).edit().putBoolean("femaleVoice", v).apply()
 
     fun mute(n: org.bolcr.letmeknow.shared.Notice, until: Long) {
         if (until == 0L) quiet.remove(conversation(n)) else quiet[conversation(n)] = until

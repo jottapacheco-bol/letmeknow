@@ -60,6 +60,10 @@ class RadioService : Service() {
             }
             Protocol.POST -> msg.optJSONObject("n")?.let { runCatching { Notice.fromJson(it) }.getOrNull() }?.let { Inbox.put(it) }
             Protocol.REMOVE -> Inbox.remove(msg.optString("key"))
+            Protocol.TONE -> runCatching {
+                val bytes = android.util.Base64.decode(msg.optString("sound"), android.util.Base64.DEFAULT)
+                if (bytes.isNotEmpty()) java.io.File(filesDir, Speaker.TONE_FILE).writeBytes(bytes)
+            }
         }
     }
 

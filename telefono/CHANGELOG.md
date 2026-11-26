@@ -1,5 +1,9 @@
 # LetMeKnow del teléfono
 
+## 1.0.1
+
+- Manda al radio el tono de notificación del teléfono, para que suene igual.
+
 ## 1.0.0
 
 - Primera versión: manda al radio las notificaciones de las apps escogidas (WhatsApp desde el principio), por la Wi-Fi o el hotspot.

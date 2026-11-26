@@ -1,5 +1,12 @@
 # LetMeKnow del radio
 
+## 1.0.1
+
+- Voz de hombre o de mujer para cada conversación (al sostener la burbuja) y la de siempre en la pantalla del radio.
+- Con «Leer en voz alta solo», un audio que viene en la notificación suena solo en vez de leerse.
+- La burbuja nueva entra con su nombre y a los 5 segundos se encoge a la bolita; un toque la abre, otro abre la ventana.
+- Suena con el mismo tono de notificación del teléfono.
+
 ## 1.0.0
 
 - Primera versión: burbujas flotantes con las notificaciones del teléfono, ventana con letra grande y los botones a la izquierda.

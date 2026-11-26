@@ -48,14 +48,14 @@ class Speaker(context: Context) {
         }
     }
 
-    fun read(n: Notice) = say(words(n))
+    fun read(n: Notice) = say(words(n), if (Settings.female(app, n)) CloudVoice.FEMALE else CloudVoice.MALE)
 
-    fun say(text: String) {
+    fun say(text: String, voice: String = CloudVoice.MALE) {
         stop()
         val mine = ++turn
         main.post { onSpeaking(true) }
         Thread {
-            val file = cloud.say(text)
+            val file = cloud.say(text, voice)
             main.post {
                 if (mine != turn) return@post
                 if (file != null && play(file)) return@post
@@ -113,8 +113,13 @@ class Speaker(context: Context) {
 
     /** The arrival sound: one, reused. A new one each time leaves players open until the radio runs out. */
     private var ring: android.media.Ringtone? = null
+    private var tone: MediaPlayer? = null
+    private var toneStamp = 0L
 
+    /** The phone's own notification tone when it sent it (so the radio sounds like the phone); else the radio's. */
     fun chime() {
+        val file = java.io.File(app.filesDir, TONE_FILE)
+        if (file.length() > 0 && phoneTone(file)) return
         try {
             ring?.let { runCatching { it.stop() } }
             val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION) ?: return
@@ -130,9 +135,34 @@ class Speaker(context: Context) {
         }
     }
 
+    private fun phoneTone(file: java.io.File): Boolean = try {
+        // Loaded once, and again only when the phone sends a new one.
+        if (tone == null || toneStamp != file.lastModified()) {
+            tone?.release()
+            tone = MediaPlayer().apply {
+                setAudioAttributes(AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build())
+                setDataSource(file.path)
+                prepare()
+            }
+            toneStamp = file.lastModified()
+        }
+        tone!!.let { if (it.isPlaying) it.pause(); it.seekTo(0); it.start() }
+        true
+    } catch (e: Exception) {
+        tone?.release()
+        tone = null
+        false
+    }
+
     fun shutdown() = tts.shutdown()
 
     companion object {
+        /** Where the phone's notification tone is kept on the radio. */
+        const val TONE_FILE = "tono-del-telefono"
+
         /** What is said: who, and the last message (or that it is a voice message). */
         fun words(n: Notice): String {
             val last = n.lines.lastOrNull()
@@ -201,18 +231,21 @@ class CloudVoice(private val context: Context) {
     companion object {
         /** Why Google's voice was not used the last time (shown on the radio's screen), or null when it worked. */
         @Volatile var problem: String? = null
-    }
 
-    /** Levite's voice: es-US Chirp 3 HD, Charon. */
-    var voice = "es-US-Chirp3-HD-Charon"
+        /** The man's voice, Levite's: es-US Chirp 3 HD, Charon. */
+        const val MALE = "es-US-Chirp3-HD-Charon"
+        /** The woman's voice, of the same kind: Kore. */
+        const val FEMALE = "es-US-Chirp3-HD-Kore"
+    }
 
     /**
      * [text] said, as an MP3 in the cache (the same text is not asked twice), or null. A connection that the phone's
      * hotspot dropped is tried once more, fresh.
      */
-    fun say(text: String): java.io.File? = ask(text) ?: if (problem?.startsWith("Sin internet") == true) ask(text) else null
+    fun say(text: String, voice: String = MALE): java.io.File? =
+        ask(text, voice) ?: if (problem?.startsWith("Sin internet") == true) ask(text, voice) else null
 
-    private fun ask(text: String): java.io.File? {
+    private fun ask(text: String, voice: String): java.io.File? {
         val key = BuildConfig.TTS_KEY_LEVITE
         if (key.isBlank()) { problem = "Esta versión no trae la clave de la voz"; return null }
         val name = java.security.MessageDigest.getInstance("SHA-256").digest((voice + "|" + text).toByteArray())
