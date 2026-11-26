@@ -156,11 +156,10 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = look.round(look.glass, 42, stroke = true)
-            // A deep, dark shadow: the bubble floats apart from everything behind it.
-            elevation = look.px(18).toFloat()
-            outlineAmbientShadowColor = android.graphics.Color.BLACK
-            outlineSpotShadowColor = android.graphics.Color.BLACK
+            // A deep, dark shadow drawn by hand (Android's own is barely visible on the radio): the bubble floats
+            // apart from everything behind it. It spills over the bubbles' padding, which doesn't clip it.
+            background = FloatShadow(look.round(look.glass, 42, stroke = true),
+                android.graphics.Color.argb(if (look.dark) 190 else 110, 0, 0, 0), look.px(14).toFloat(), look.px(7).toFloat())
             setPadding(look.px(10), 0, look.px(12), 0)
             contentDescription = "${n.title}, ${n.app}"
         }
@@ -1419,6 +1418,39 @@ class HoldRing(private val centerX: Int, private val radius: Float, stroke: Floa
 
     override fun setAlpha(alpha: Int) = Unit
     override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) = Unit
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity() = PixelFormat.TRANSLUCENT
+}
+
+/** [glass] with a soft shadow around and below it, outside the bubble's own edges, never behind the glass itself. */
+class FloatShadow(private val glass: android.graphics.drawable.Drawable, color: Int, private val blur: Float, private val drop: Float) :
+    android.graphics.drawable.Drawable() {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = color
+        maskFilter = android.graphics.BlurMaskFilter(blur, android.graphics.BlurMaskFilter.Blur.NORMAL)
+    }
+    private val shape = android.graphics.Path()
+
+    override fun onBoundsChange(bounds: android.graphics.Rect) {
+        glass.bounds = bounds
+        shape.reset()
+        val r = bounds.height() / 2f
+        shape.addRoundRect(android.graphics.RectF(bounds), r, r, android.graphics.Path.Direction.CW)
+    }
+
+    override fun draw(canvas: Canvas) {
+        val b = bounds
+        val r = b.height() / 2f
+        canvas.save()
+        canvas.clipOutPath(shape)
+        canvas.drawRoundRect(b.left + blur * 0.2f, b.top + drop, b.right - blur * 0.2f, b.bottom + drop, r, r, paint)
+        canvas.restore()
+        glass.draw(canvas)
+    }
+
+    override fun getOutline(outline: Outline) = glass.getOutline(outline)
+    override fun setAlpha(alpha: Int) { glass.alpha = alpha }
+    override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) { glass.colorFilter = colorFilter }
     @Deprecated("Deprecated in Java")
     override fun getOpacity() = PixelFormat.TRANSLUCENT
 }
