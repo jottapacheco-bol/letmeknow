@@ -87,11 +87,18 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
 
     private fun allowed() = AndroidSettings.canDrawOverlays(context)
 
+    private companion object {
+        /** How long a bubble shows its name before folding into its ball. */
+        const val FOLD_MS = 5_000L
+    }
+
     private fun changed(arrived: Notice?) {
-        if (arrived?.audio != null) preload(arrived)
+        val autoRead = arrived != null && !Settings.muted(arrived) && Settings.autoRead(context)
+        // With "leer solo" on, an audio message is played instead of reading its words.
+        if (arrived?.audio != null) preload(arrived, play = autoRead)
         if (arrived != null && !Settings.muted(arrived)) {
             if (Settings.sound(context)) speaker.chime()
-            if (Settings.autoRead(context)) main.postDelayed({ speaker.read(arrived) }, 600)
+            if (autoRead && arrived.audio == null) main.postDelayed({ speaker.read(arrived) }, 600)
         }
         val open = openKey
         if (open != null) {
@@ -119,8 +126,11 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         root.removeAllViews()
         root.gravity = if (Settings.bubblesLeft(context)) Gravity.START else Gravity.END
         var first = true
+        // The one that just arrived comes in whole, with its name, and folds in 5 seconds.
+        if (arrived != null) unfolded[arrived.key] = unfolded[arrived.key] ?: Runnable {}
         notices.take(4).forEach { n ->
             val b = bubble(n)
+            if (n.key == arrived?.key) foldLater(n.key, b)
             root.addView(b, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(84)).apply { if (!first) topMargin = look.px(22) })
             first = false
             if (n.key == arrived?.key) enter(b)
@@ -186,8 +196,95 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             setPadding(look.px(8), 0, look.px(8), 0)
         }
         row.addView(badge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(40)))
-        drag(row, onThrow = { Inbox.remove(n.key) }, onHold = { openMute(n) }) { openPanel(n.key) }
+        // The small number on the ball's photo, for when the bubble is folded.
+        val mini = text(Inbox.count(n.key).toString(), 15f, Look.ON_ORANGE, bold = true).apply {
+            gravity = Gravity.CENTER
+            background = look.round(Look.ORANGE, 15)
+            minWidth = look.px(30)
+            includeFontPadding = false
+            setPadding(look.px(6), 0, look.px(6), 0)
+            alpha = 0f
+            scaleX = 0.4f; scaleY = 0.4f
+        }
+        (row.getChildAt(0) as FrameLayout).addView(mini, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(30),
+            (if (n.work) Gravity.START else Gravity.END) or Gravity.TOP).apply {
+            if (n.work) marginStart = -look.px(6) else marginEnd = -look.px(6)
+            topMargin = -look.px(6)
+        })
+        if (unfolded[n.key] == null) fold(row, animated = false)
+        drag(row, onThrow = { Inbox.remove(n.key) }, onHold = { openMute(n) }) {
+            // Folded: the first touch shows the name again; the next one opens the message.
+            if (unfolded[n.key] == null) { unfold(n.key, row); foldLater(n.key, row) } else openPanel(n.key)
+        }
         return row
+    }
+
+    /** Conversations showing their name now (just arrived, or touched once); the others are just the ball. */
+    private val unfolded = HashMap<String, Runnable>()
+
+    /** In 5 seconds, if nothing else happened, [row] folds into its ball. */
+    private fun foldLater(key: String, row: View) {
+        unfolded[key]?.let { main.removeCallbacks(it) }
+        val r = Runnable {
+            if (unfolded.remove(key) != null && row.isAttachedToWindow) fold(row as ViewGroup, animated = true)
+        }
+        unfolded[key] = r
+        main.postDelayed(r, FOLD_MS)
+    }
+
+    /**
+     * Folds the bubble into a ball: the name fades and narrows away, the big number too, and a small number appears
+     * on the photo. [unfold] does the reverse.
+     */
+    private fun fold(row: ViewGroup, animated: Boolean) = shape(row, folded = true, animated = animated)
+
+    private fun unfold(key: String, row: View) {
+        unfolded[key] = unfolded[key] ?: Runnable {}
+        shape(row as ViewGroup, folded = false, animated = true)
+    }
+
+    private fun shape(row: ViewGroup, folded: Boolean, animated: Boolean) {
+        val words = row.getChildAt(1)
+        val badge = row.getChildAt(2)
+        val mini = (row.getChildAt(0) as ViewGroup).let { it.getChildAt(it.childCount - 1) }
+        fun natural(v: View): Int {
+            v.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+            return v.measuredWidth
+        }
+        val wordsW = natural(words)
+        val badgeW = natural(badge)
+        val gap = look.px(14)
+        val endPad = look.px(12)
+        val ballPad = look.px(10)
+        fun at(k: Float) {
+            // k = 1 open, 0 folded.
+            (words.layoutParams as LinearLayout.LayoutParams).apply {
+                width = (wordsW * k).toInt()
+                marginStart = (gap * k).toInt(); marginEnd = (gap * k).toInt()
+            }
+            badge.layoutParams.width = (badgeW * k).toInt()
+            words.alpha = (k * 1.6f - 0.6f).coerceIn(0f, 1f)
+            badge.alpha = k
+            mini.alpha = 1 - k
+            mini.scaleX = 0.4f + 0.6f * (1 - k); mini.scaleY = mini.scaleX
+            row.setPadding(ballPad, 0, (ballPad + (endPad - ballPad) * k).toInt(), 0)
+            row.requestLayout()
+        }
+        val from = if (folded) 1f else 0f
+        val to = 1f - from
+        if (!animated) { at(to); return }
+        ValueAnimator.ofFloat(from, to).apply {
+            duration = 420
+            interpolator = if (folded) DecelerateInterpolator(1.6f) else OvershootInterpolator(1.1f)
+            addUpdateListener { at((it.animatedValue as Float).coerceIn(0f, 1.05f)) }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(a: android.animation.Animator) {
+                    // Back to its own size when open, so a longer name later still fits.
+                    if (!folded) { words.layoutParams.width = ViewGroup.LayoutParams.WRAP_CONTENT; badge.layoutParams.width = ViewGroup.LayoutParams.WRAP_CONTENT; row.requestLayout() }
+                }
+            })
+            start()
+        }
     }
 
     /** The new one slides in from the edge, then its number beats a few times. */
@@ -880,21 +977,38 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     /** The audio of the last message that brought one, already loaded so it starts at the touch. */
     private var ready: Pair<String, android.media.MediaPlayer>? = null
 
-    /** Loads [n]'s audio in the background as soon as it arrives. */
-    private fun preload(n: Notice) {
-        if (n.audio == null || ready?.first == n.key) return
+    /** Which audio: the conversation and the audio's size (a new voice message in the same chat is another one). */
+    private fun audioId(n: Notice) = n.key + "#" + (n.audio?.size ?: 0)
+
+    /**
+     * Loads [n]'s audio in the background as soon as it arrives; with [play], it starts by itself once loaded (after
+     * the arrival sound), through the car's speakers.
+     */
+    private fun preload(n: Notice, play: Boolean) {
+        if (n.audio == null || ready?.first == audioId(n)) return
         Thread {
             val mp = prepareAudio(n) ?: return@Thread
             main.post {
-                ready?.second?.let { runCatching { it.release() } }
-                ready = n.key to mp
+                ready?.second?.let { old ->
+                    // One that is still playing by itself finishes first; it is let go when it ends.
+                    if (runCatching { old.isPlaying }.getOrDefault(false)) old.setOnCompletionListener { it.release() }
+                    else runCatching { old.release() }
+                }
+                ready = audioId(n) to mp
+                if (play) main.postDelayed({
+                    if (ready?.second === mp && player == null) {
+                        speaker.stop()
+                        mp.setOnCompletionListener { it.seekTo(0) }
+                        runCatching { mp.start() }
+                    }
+                }, 700)
             }
         }.apply { isDaemon = true }.start()
     }
 
     private fun takeReady(n: Notice): android.media.MediaPlayer? {
         val (key, mp) = ready ?: return null
-        if (key != n.key) return null
+        if (key != audioId(n)) return null
         ready = null
         return mp
     }
@@ -933,7 +1047,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             if (mp.isPlaying) mp.pause()
             mp.seekTo(0)
             mp.setOnCompletionListener(null)
-            if (key != null && Inbox.get(key) != null) {
+            if (key != null && Inbox.get(key.substringBeforeLast('#')) != null) {
                 ready?.second?.let { runCatching { it.release() } }
                 ready = key to mp
                 return
@@ -972,7 +1086,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         fun clock(ms: Long) = (ms / 1000).let { "%d:%02d".format(it / 60, it % 60) }
         // Usually ready already (prepared when the message arrived); if not, prepared now.
         val mp = takeReady(n) ?: prepareAudio(n) ?: return voiceRow(n)
-        playerKey = n.key
+        playerKey = audioId(n)
         player = mp
         val total = mp.duration.toLong().coerceAtLeast(1)
         time.text = clock(total)
@@ -997,6 +1111,12 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             line.scaleX = 0f
             time.text = clock(total)
             it.seekTo(0)
+        }
+        // Already playing by itself ("leer solo"): the line and the button pick it up where it is.
+        if (mp.isPlaying) {
+            fill.start()
+            fill.currentPlayTime = mp.currentPosition.toLong()
+            playing(true)
         }
         button.setOnClickListener {
             if (player !== mp) return@setOnClickListener
@@ -1184,7 +1304,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                     LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
                 setOnClickListener { mute(System.currentTimeMillis() + m * 60_000L) }
             }
-            grid.addView(b, LinearLayout.LayoutParams(0, look.px(100), 1f).apply { marginEnd = look.px(14) })
+            grid.addView(b, LinearLayout.LayoutParams(0, look.px(92), 1f).apply { marginEnd = look.px(14) })
         }
         val untilOff = LinearLayout(context).apply {
             gravity = Gravity.CENTER
@@ -1193,7 +1313,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             addView(icon(R.drawable.ic_power, look.strongInk, 40, null), LinearLayout.LayoutParams(look.px(40), look.px(40)))
             setOnClickListener { mute(Settings.UNTIL_OFF) }
         }
-        grid.addView(untilOff, LinearLayout.LayoutParams(0, look.px(100), 1f).apply { marginEnd = look.px(14) })
+        grid.addView(untilOff, LinearLayout.LayoutParams(0, look.px(92), 1f).apply { marginEnd = look.px(14) })
         // For good: also after turning the car off, until "Volver a oír" on the radio's LetMeKnow screen.
         val always = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -1205,7 +1325,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             setOnClickListener { Settings.muteForever(context, n); closePanel() }
         }
-        grid.addView(always, LinearLayout.LayoutParams(0, look.px(100), 1.25f))
+        grid.addView(always, LinearLayout.LayoutParams(0, look.px(92), 1.25f))
         ObjectAnimator.ofPropertyValuesHolder(always,
             PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.05f, 1f),
             PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.05f, 1f)).apply {
@@ -1214,6 +1334,38 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         c.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(22) })
 
         c.addView(View(context).apply { setBackgroundColor(look.edge) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, look.px(1).coerceAtLeast(1)).apply { topMargin = look.px(22); bottomMargin = look.px(12) })
+        // The voice that reads this conversation; touching one says a sample with it.
+        val voiceLine = row(Gravity.CENTER_VERTICAL)
+        voiceLine.addView(icon(R.drawable.ic_speaker, Look.BLUE, 32, null), LinearLayout.LayoutParams(look.px(32), look.px(32)))
+        voiceLine.addView(text("Voz", 24f, look.ink, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(16); marginEnd = look.px(18) })
+        val chips = mutableListOf<Pair<Boolean, LinearLayout>>()
+        fun paintChips() {
+            val female = Settings.female(context, n)
+            chips.forEach { (isFemale, chip) ->
+                val on = isFemale == female
+                chip.background = if (on) look.round(Look.BLUE, 24) else look.round(look.chip, 24, stroke = true)
+                val ink = if (on) Look.ON_BLUE else look.ink
+                (chip.getChildAt(0) as ImageView).setColorFilter(ink, PorterDuff.Mode.SRC_IN)
+                (chip.getChildAt(1) as TextView).setTextColor(ink)
+            }
+        }
+        listOf(false to "Hombre", true to "Mujer").forEachIndexed { i, (isFemale, label) ->
+            val chip = row(Gravity.CENTER).apply {
+                contentDescription = "Voz de $label"
+                addView(icon(if (isFemale) R.drawable.ic_female else R.drawable.ic_male, look.ink, 30, null), LinearLayout.LayoutParams(look.px(30), look.px(30)))
+                addView(text(label, 22f, look.ink, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(10) })
+                setOnClickListener {
+                    Settings.setFemale(context, n, isFemale)
+                    paintChips()
+                    animate().scaleX(0.93f).scaleY(0.93f).setDuration(80).withEndAction { animate().scaleX(1f).scaleY(1f).setDuration(160).start() }.start()
+                    speaker.say("Así le leo los mensajes de ${n.title.ifBlank { n.app }}.", if (isFemale) CloudVoice.FEMALE else CloudVoice.MALE)
+                }
+            }
+            chips += isFemale to chip
+            voiceLine.addView(chip, LinearLayout.LayoutParams(0, look.px(72), 1f).apply { if (i == 0) marginEnd = look.px(12) })
+        }
+        paintChips()
+        c.addView(voiceLine, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = look.px(6) })
         c.addView(toggle(R.drawable.ic_bell, "Sonido al llegar", Settings.sound(context)) { Settings.setSound(context, it) })
         c.addView(toggle(R.drawable.ic_speaker, "Leer en voz alta solo", Settings.autoRead(context)) { Settings.setAutoRead(context, it) })
     }

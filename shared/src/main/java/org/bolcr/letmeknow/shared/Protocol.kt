@@ -24,7 +24,7 @@ object Protocol {
     /** How the phone is announced on the network (NSD / mDNS). */
     const val SERVICE_TYPE = "_letmeknow._tcp."
     const val SERVICE_NAME = "LetMeKnow"
-    const val VERSION = 2
+    const val VERSION = 3
 
     /** The radio pings this often, and gives up on a connection that said nothing for [SILENT_MS]. */
     const val PING_MS = 10_000L
@@ -34,6 +34,8 @@ object Protocol {
     const val ALL = "all"
     const val POST = "post"
     const val REMOVE = "remove"
+    /** The phone's own notification tone (`sound`, base64, and `name`), sent after `all`; the radio plays it on arrival. */
+    const val TONE = "tone"
     const val OPEN = "open"
     const val REPLY = "reply"
     const val PING = "ping"

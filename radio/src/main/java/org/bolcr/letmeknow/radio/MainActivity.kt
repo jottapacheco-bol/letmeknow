@@ -200,16 +200,36 @@ class MainActivity : Activity() {
             voiceState.text = "Probando…"
             voiceState.setTextColor(look.soft)
             Thread {
-                val ok = CloudVoice(this).say("Hola, soy la voz de LetMeKnow. " + System.currentTimeMillis() % 1000) != null
+                val voice = if (Settings.femaleVoice(this)) CloudVoice.FEMALE else CloudVoice.MALE
+                val ok = CloudVoice(this).say("Hola, soy la voz de LetMeKnow. " + System.currentTimeMillis() % 1000, voice) != null
                 runOnUiThread {
                     voiceState.text = if (ok) "✓ Funciona" else "✗ " + (CloudVoice.problem ?: "No respondió")
                     voiceState.setTextColor(if (ok) Look.GREEN else Look.RED)
                 }
             }.start()
         })
+        // The voice for conversations without their own (each one is chosen holding its bubble).
+        val voices = row()
+        listOf(false to "Hombre", true to "Mujer").forEachIndexed { i, (female, label) ->
+            val on = Settings.femaleVoice(this) == female
+            voices.addView(pill(label, if (on) Look.BLUE else look.chip, if (on) Look.ON_BLUE else look.ink) {
+                Settings.setFemaleVoice(this, female)
+                build()
+            }.apply {
+                val d = getDrawable(if (female) R.drawable.ic_female else R.drawable.ic_male)!!.mutate()
+                d.setTint(if (on) Look.ON_BLUE else look.ink)
+                d.setBounds(0, 0, look.px(28), look.px(28))
+                text = android.text.SpannableString("  $label").apply {
+                    setSpan(android.text.style.ImageSpan(d, android.text.style.DynamicDrawableSpan.ALIGN_BOTTOM), 0, 1, 0)
+                }
+            }, LinearLayout.LayoutParams(0, look.px(72), 1f).apply { if (i == 0) marginEnd = look.px(12) })
+        }
         col.addView(card(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(voiceRow)
+            addView(text("Para las conversaciones que no tienen una escogida:", 18f, look.soft, false),
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(12) })
+            addView(voices, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(10) })
             addView(voiceState, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(10) })
         }), spaced())
         CloudVoice.problem?.let { voiceState.text = "✗ $it"; voiceState.setTextColor(Look.RED) }

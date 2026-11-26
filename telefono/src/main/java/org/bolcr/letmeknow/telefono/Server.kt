@@ -43,10 +43,36 @@ object Server {
     /** What the radio asks for, run on the main thread. Set by [Listener]. */
     @Volatile var onCommand: (JSONObject) -> Unit = {}
 
+    @Volatile private var app: Context? = null
+
+    /** The phone's notification tone, so the radio sounds like the phone. Null if Android doesn't let it be read. */
+    private fun tone(c: Context): Pair<ByteArray, String>? = try {
+        val uri = android.media.RingtoneManager.getActualDefaultRingtoneUri(c, android.media.RingtoneManager.TYPE_NOTIFICATION)
+        if (uri == null) null else {
+            val name = runCatching { android.media.RingtoneManager.getRingtone(c, uri)?.getTitle(c) }.getOrNull().orEmpty()
+            val bytes = c.contentResolver.openInputStream(uri)?.use { input ->
+                val out = java.io.ByteArrayOutputStream()
+                val buf = ByteArray(16 * 1024)
+                while (true) {
+                    val r = input.read(buf)
+                    if (r < 0) break
+                    out.write(buf, 0, r)
+                    if (out.size() > 1024 * 1024) return null
+                }
+                out.toByteArray()
+            }
+            bytes?.takeIf { it.isNotEmpty() }?.let { it to name }
+        }
+    } catch (e: Exception) {
+        Log.i(TAG, "Could not read the notification tone: ${e.message}")
+        null
+    }
+
     fun start(context: Context) {
         if (started) return
         started = true
         val app = context.applicationContext
+        this.app = app
         Thread({ acceptLoop() }, "letmeknow-server").apply { isDaemon = true }.start()
         announce(app)
     }
@@ -89,6 +115,11 @@ object Server {
                         val all = org.json.JSONArray()
                         snapshot().forEach { all.put(it) }
                         send(Protocol.message(Protocol.ALL) { put("list", all) })
+                        app?.let { tone(it) }?.let { (bytes, name) ->
+                            send(Protocol.message(Protocol.TONE) {
+                                put("sound", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)).put("name", name)
+                            })
+                        }
                     }
                     Protocol.PING -> send(Protocol.message(Protocol.PONG))
                     else -> main.post { onCommand(msg) }
