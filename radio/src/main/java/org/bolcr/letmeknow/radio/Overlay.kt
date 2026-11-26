@@ -586,6 +586,54 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             addView(more, FrameLayout.LayoutParams(look.px(48), look.px(48), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
         }
         right.addView(textBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        // Several conversations: a low bar at the bottom, and a sideways swipe on the words does the same.
+        val all = Inbox.all
+        val at = all.indexOfFirst { it.key == n.key }
+        if (all.size > 1) {
+            fun go(by: Int) {
+                val next = all[(at + by + all.size) % all.size].key
+                textBox.animate().translationX(-by * look.px(80).toFloat()).alpha(0f).setDuration(140)
+                    .withEndAction { showRead(next, fade = true) }.start()
+            }
+            val bar = row(Gravity.CENTER_VERTICAL)
+            fun flat(res: Int, description: String, by: Int) = FrameLayout(context).apply {
+                background = look.round(look.chip, 26, stroke = true)
+                contentDescription = description
+                setOnClickListener { go(by) }
+                addView(icon(res, look.ink, 30, null).apply { minimumWidth = 0; minimumHeight = 0 },
+                    FrameLayout.LayoutParams(look.px(30), look.px(30), Gravity.CENTER))
+            }
+            bar.addView(flat(R.drawable.ic_prev, "Anterior", -1), LinearLayout.LayoutParams(look.px(170), look.px(52)))
+            val dots = row(Gravity.CENTER)
+            all.take(8).forEachIndexed { i, _ ->
+                val d = View(context).apply { background = look.round(if (i == at) Look.ORANGE else look.off, 5) }
+                dots.addView(d, LinearLayout.LayoutParams(look.px(if (i == at) 26 else 10), look.px(10)).apply { marginStart = look.px(4); marginEnd = look.px(4) })
+            }
+            bar.addView(dots, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            bar.addView(flat(R.drawable.ic_next, "Siguiente", 1), LinearLayout.LayoutParams(look.px(170), look.px(52)))
+            right.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(12) })
+
+            val far = look.px(110)
+            var sx = 0f
+            var sy = 0f
+            scroll.setOnTouchListener { _, e ->
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> { sx = e.rawX; sy = e.rawY }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = e.rawX - sx
+                        if (abs(dx) > abs(e.rawY - sy) * 1.5f) textBox.translationX = dx * 0.5f
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        val dx = e.rawX - sx
+                        val swiped = e.actionMasked == MotionEvent.ACTION_UP && abs(dx) > far && abs(dx) > abs(e.rawY - sy) * 1.5f
+                        // To the left shows the next one, to the right the one before, like turning pages.
+                        if (swiped) go(if (dx < 0) 1 else -1) else textBox.animate().translationX(0f).setDuration(150).start()
+                    }
+                }
+                false
+            }
+        }
         scroll.post {
             if (!scroll.canScrollVertically(1)) return@post
             more.visibility = View.VISIBLE
@@ -628,9 +676,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         }
         val all = Inbox.all
         val at = all.indexOfFirst { it.key == n.key }
-        if (all.size > 1) {
-            if (full) gap()
-            smallAt(small(R.drawable.ic_prev, "Anterior") { showRead(all[(at - 1 + all.size) % all.size].key, fade = true) }, first = full)
+        if (all.size > 1 && !full) {
+            smallAt(small(R.drawable.ic_prev, "Anterior") { showRead(all[(at - 1 + all.size) % all.size].key, fade = true) })
             val dots = row(Gravity.CENTER).apply { setPadding(look.px(6), 0, look.px(6), 0) }
             all.take(6).forEachIndexed { i, _ ->
                 val d = View(context).apply { background = look.round(if (i == at) Look.ORANGE else look.off, 5) }
