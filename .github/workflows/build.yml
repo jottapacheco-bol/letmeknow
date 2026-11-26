@@ -1,0 +1,92 @@
+name: Android
+
+# On GitHub's free runner (the pastor chose it, 26 Nov 2026). Each version on main is published as a Release with
+# its two APKs; each pull request updates a pre-release "pr-<number>" to try it before merging. Nothing is uploaded
+# as an Actions artifact (the account's storage is full).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    name: APKs del teléfono y del radio
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v5
+      # Always the same signature, so each new version installs over the last one. The key is the repository's
+      # secret SIGNING_KEYSTORE (the keystore in base64, debug passwords); without it the APKs still build, but
+      # with a new signature each time.
+      - name: Signature
+        env:
+          SIGNING_KEYSTORE: ${{ secrets.SIGNING_KEYSTORE }}
+        run: |
+          mkdir -p ~/.android
+          if [ -n "$SIGNING_KEYSTORE" ]; then
+            echo "$SIGNING_KEYSTORE" | base64 -d > ~/.android/debug.keystore
+          else
+            echo "::warning::Falta el secreto SIGNING_KEYSTORE: estas APK no se instalan encima de las anteriores."
+          fi
+      - name: Build
+        env:
+          TTS_KEY_LEVITE: ${{ secrets.TTS_KEY_LEVITE }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+      - name: Publish the APKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          phone=$(grep -oP 'versionName\s*=\s*"\K[^"]+' telefono/build.gradle.kts)
+          radio=$(grep -oP 'versionName\s*=\s*"\K[^"]+' radio/build.gradle.kts)
+          mkdir -p out
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            tag="pr-${{ github.event.pull_request.number }}"
+            sha="${{ github.event.pull_request.head.sha }}"
+            suffix="-$tag"
+          else
+            tag="v$radio-telefono-$phone"
+            sha="${{ github.sha }}"
+            suffix=""
+          fi
+          cp telefono/build/outputs/apk/release/telefono-release.apk "out/LetMeKnow-Telefono-$phone$suffix.apk"
+          cp radio/build/outputs/apk/release/radio-release.apk "out/LetMeKnow-Radio-$radio$suffix.apk"
+          # A pull request's pre-release is made again on each push, at its newest code.
+          gh release delete "$tag" --cleanup-tag -y 2>/dev/null || true
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            gh release create "$tag" out/*.apk --target "$sha" --prerelease \
+              --title "Prueba del PR #${{ github.event.pull_request.number }}" \
+              --notes "Para probar antes de unir: LetMeKnow del teléfono $phone y del radio $radio. ${{ github.event.pull_request.html_url }}"
+          else
+            gh release create "$tag" out/*.apk --target "$sha" --latest \
+              --title "LetMeKnow: radio $radio, teléfono $phone" \
+              --notes-file <(printf '## Radio\n\n'; sed -n '3,/^## /p' radio/CHANGELOG.md | sed '$d'; printf '\n## Teléfono\n\n'; sed -n '3,/^## /p' telefono/CHANGELOG.md | sed '$d')
+          fi
+          echo "APKs: https://github.com/${{ github.repository }}/releases/tag/$tag"
+      # Only the last 3 versions of main are kept; a merged or closed pull request's pre-release goes with it.
+      - name: Tidy the releases
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 100 --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease | not)] | sort_by(.createdAt) | reverse | .[3:] | .[].tagName' |
+            while read -r t; do gh release delete "$t" --cleanup-tag -y; done
+          for t in $(gh release list --limit 100 --json tagName --jq '.[].tagName | select(startswith("pr-"))'); do
+            state=$(gh pr view "${t#pr-}" --json state --jq .state 2>/dev/null || echo OPEN)
+            if [ "$state" != "OPEN" ]; then gh release delete "$t" --cleanup-tag -y; fi
+          done

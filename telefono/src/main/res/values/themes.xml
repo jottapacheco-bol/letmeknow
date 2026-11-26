@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Light or dark, as the phone is set. -->
+    <style name="Lmk" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorAccent">#FFE0703A</item>
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>

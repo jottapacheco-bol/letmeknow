@@ -13,13 +13,13 @@ Cuando el teléfono se conecta al Bluetooth del carro, la rutina del teléfono e
 
 ## Compilar
 
-Igual que Levite: sin Android Studio. Cada cambio en `main` compila en la computadora del pastor (runner propio de GitHub, `self-hosted, Windows`) y deja los APK en `D:\Levite\Compilados\LetMeKnow-Telefono-<versión>.apk` y `LetMeKnow-Radio-<versión>.apk`. Cada PR deja los suyos en `D:\Levite\Revisados` con `-pr<número>`.
+Sin Android Studio, en el runner gratuito de GitHub (lo escogió el pastor, 26 nov. 2026). Cada cambio en `main` publica una **Release** con `LetMeKnow-Telefono-<versión>.apk` y `LetMeKnow-Radio-<versión>.apk` (se guardan las últimas 3). Cada PR deja los suyos en la pre-release `pr-<número>` para probarlos antes de unir. Se bajan desde *Releases* en GitHub, en el teléfono o en la computadora.
 
-**Una sola vez:** este repositorio necesita su propio runner en la computadora (GitHub no comparte los runners de una cuenta personal entre repositorios). En GitHub: *Settings › Actions › Runners › New self-hosted runner*, Windows, y en la computadora instálelo en una carpeta aparte (por ejemplo `D:\actions-runner-letmeknow`) como servicio, igual que los de Levite.
+**Una sola vez:** en GitHub, *Settings › Secrets and variables › Actions › New repository secret*, nombre `SIGNING_KEYSTORE`, con el texto de la firma que le dio Claude. Así todas las versiones tienen la misma firma y cada una se instala encima de la anterior. Guarde ese texto en un lugar seguro: si se pierde, hay que desinstalar y volver a instalar.
 
 ## La voz de Google (opcional)
 
-El radio lee con la voz de Levite (Google Chirp 3 HD, Charon) si al compilar encuentra `TTS_KEY_LEVITE=<la clave>` en `D:\Levite\claves.properties`. Es la misma clave «Levite TTS» del proyecto de bolcr.org. Hay que agregarle en Google Cloud la app Android `org.bolcr.letmeknow.radio` con el SHA-1 de la firma de CI (`92:6F:DC:66:5B:29:BC:B9:24:05:18:42:65:1A:4F:45:DA:EE:DD:D4`). Sin clave, lee la voz del propio radio.
+El radio lee con la voz de Levite (Google Chirp 3 HD, Charon) si al compilar encuentra la clave: el secreto `TTS_KEY_LEVITE` del repositorio (la misma clave «Levite TTS» del proyecto de bolcr.org). Hay que agregarle en Google Cloud la app Android `org.bolcr.letmeknow.radio` con el SHA-1 de la firma de LetMeKnow, `1E:7C:AE:BB:48:0D:55:87:36:A6:BF:85:04:F5:57:DD:B5:AE:80:B0`. Sin clave, lee la voz del propio radio.
 
 ## Primera vez en cada aparato
 
