@@ -40,6 +40,8 @@ object Settings {
     /** Where the bubbles were left (dragged), from the top of the screen. */
     fun bubblesY(c: Context): Int = prefs(c).getInt("bubblesY", -1)
     fun setBubblesY(c: Context, v: Int) = prefs(c).edit().putInt("bubblesY", v).apply()
+    fun bubblesX(c: Context): Int = prefs(c).getInt("bubblesX", -1)
+    fun setBubblesX(c: Context, v: Int) = prefs(c).edit().putInt("bubblesX", v).apply()
     fun bubblesLeft(c: Context): Boolean = prefs(c).getBoolean("bubblesLeft", false)
     fun setBubblesLeft(c: Context, v: Boolean) = prefs(c).edit().putBoolean("bubblesLeft", v).apply()
 

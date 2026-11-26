@@ -19,6 +19,8 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.HapticFeedbackConstants
+import android.view.VelocityTracker
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
@@ -137,7 +139,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         }
         val params = overlayParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.TOP or if (Settings.bubblesLeft(context)) Gravity.START else Gravity.END
-            x = look.px(12)
+            x = Settings.bubblesX(context).takeIf { it >= 0 } ?: look.px(12)
             y = Settings.bubblesY(context).takeIf { it >= 0 } ?: look.px(30)
         }
         wm.addView(root, params)
@@ -206,7 +208,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             setPadding(look.px(8), 0, look.px(8), 0)
         }
         row.addView(badge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(40)))
-        drag(row) { openPanel(n.key) }
+        drag(row, onThrow = { Inbox.remove(n.key) }) { openPanel(n.key) }
         return row
     }
 
@@ -230,47 +232,113 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         }
     }
 
-    /** Touching opens; dragging moves the bubbles up and down, and to the other side of the screen. */
+    /**
+     * Touching opens. Dragging (up, down, or holding a moment and then anywhere) moves all the bubbles, also to the
+     * other side of the screen, so they never cover what is behind. A quick sideways throw of a conversation
+     * ([onThrow]) sends it off the screen and removes it from the radio (it comes back if a new message arrives).
+     */
     @SuppressLint("ClickableViewAccessibility")
-    private fun drag(v: View, onTap: () -> Unit) {
+    private fun drag(v: View, onThrow: (() -> Unit)? = null, onTap: () -> Unit) {
         val slop = ViewConfiguration.get(context).scaledTouchSlop
+        val fling = ViewConfiguration.get(context).scaledMinimumFlingVelocity * 6
         var downY = 0f
         var downX = 0f
         var startY = 0
-        var moved = false
+        var startX = 0
+        // 0 nothing yet, 1 moving the bubbles, 2 throwing this one.
+        var gesture = 0
+        var tracker: VelocityTracker? = null
+        val hold = Runnable {
+            if (gesture == 0) {
+                gesture = 1
+                v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                v.animate().scaleX(1.06f).scaleY(1.06f).setDuration(120).start()
+            }
+        }
         v.setOnTouchListener { view, e ->
             val params = bubblesParams ?: return@setOnTouchListener false
+            val fromEnd = params.gravity and Gravity.END == Gravity.END
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    downX = e.rawX; downY = e.rawY; startY = params.y; moved = false
+                    downX = e.rawX; downY = e.rawY; startY = params.y; startX = params.x; gesture = 0
+                    tracker = VelocityTracker.obtain().also { it.addMovement(e) }
                     view.animate().scaleX(0.94f).scaleY(0.94f).setDuration(90).start()
+                    main.postDelayed(hold, 350)
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (abs(e.rawY - downY) > slop || abs(e.rawX - downX) > slop) moved = true
-                    if (moved) {
-                        params.y = (startY + (e.rawY - downY)).toInt().coerceAtLeast(0)
-                        bubbles?.let { runCatching { wm.updateViewLayout(it, params) } }
+                    tracker?.addMovement(e)
+                    val dx = e.rawX - downX
+                    val dy = e.rawY - downY
+                    if (gesture == 0 && (abs(dx) > slop || abs(dy) > slop)) {
+                        main.removeCallbacks(hold)
+                        gesture = if (onThrow != null && abs(dx) > abs(dy) * 1.3f) 2 else 1
+                        view.animate().scaleX(1f).scaleY(1f).setDuration(90).start()
+                    }
+                    when (gesture) {
+                        1 -> {
+                            val width = context.resources.displayMetrics.widthPixels
+                            params.y = (startY + dy).toInt().coerceAtLeast(0)
+                            params.x = (startX + if (fromEnd) -dx else dx).toInt().coerceIn(0, width / 2)
+                            bubbles?.let { runCatching { wm.updateViewLayout(it, params) } }
+                        }
+                        2 -> {
+                            view.translationX = dx
+                            view.alpha = (1f - abs(dx) / (view.width * 1.2f)).coerceIn(0.15f, 1f)
+                            view.rotation = dx / view.width * 8f
+                        }
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
-                    if (moved) {
-                        val width = context.resources.displayMetrics.widthPixels
-                        val left = e.rawX < width / 2
-                        Settings.setBubblesY(context, params.y)
-                        if (left != Settings.bubblesLeft(context)) {
-                            Settings.setBubblesLeft(context, left)
-                            params.gravity = Gravity.TOP or if (left) Gravity.START else Gravity.END
-                            bubbles?.let { runCatching { wm.updateViewLayout(it, params) } }
-                            refreshBubbles(null)
+                    main.removeCallbacks(hold)
+                    tracker?.addMovement(e)
+                    tracker?.computeCurrentVelocity(1000)
+                    val vx = tracker?.xVelocity ?: 0f
+                    tracker?.recycle()
+                    tracker = null
+                    when (gesture) {
+                        1 -> {
+                            view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                            settle(params, e.rawX)
                         }
-                    } else if (e.actionMasked == MotionEvent.ACTION_UP) {
-                        onTap()
+                        2 -> {
+                            val dx = e.rawX - downX
+                            val thrown = abs(dx) > view.width * 0.4f || (abs(vx) > fling && vx * dx > 0)
+                            if (thrown) {
+                                val dir = if (dx > 0) 1f else -1f
+                                view.animate().translationX(dir * view.width * 1.6f).alpha(0f).rotation(dir * 14f)
+                                    .setDuration(220).setInterpolator(DecelerateInterpolator())
+                                    .withEndAction { onThrow?.invoke() }.start()
+                            } else {
+                                view.animate().translationX(0f).alpha(1f).rotation(0f)
+                                    .setDuration(260).setInterpolator(OvershootInterpolator(1.6f)).start()
+                            }
+                        }
+                        else -> {
+                            view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                            if (e.actionMasked == MotionEvent.ACTION_UP) onTap()
+                        }
                     }
                 }
             }
             true
         }
+    }
+
+    /** After moving: the bubbles keep their place, on the side of the screen where they were left. */
+    private fun settle(params: WindowManager.LayoutParams, rawX: Float) {
+        val width = context.resources.displayMetrics.widthPixels
+        val left = rawX < width / 2
+        val root = bubbles ?: return
+        if (left != Settings.bubblesLeft(context)) {
+            // The same spot on screen, measured from the other edge.
+            params.x = (width - params.x - root.width).coerceIn(0, width / 2)
+            Settings.setBubblesLeft(context, left)
+            params.gravity = Gravity.TOP or if (left) Gravity.START else Gravity.END
+            runCatching { wm.updateViewLayout(root, params) }
+            refreshBubbles(null)
+        }
+        Settings.setBubblesY(context, params.y)
+        Settings.setBubblesX(context, params.x)
     }
 
     // ---------------------------------------------------------------- the panel
