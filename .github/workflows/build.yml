@@ -1,0 +1,59 @@
+name: Android
+
+# The same build as Levite (bol-levite): on the pastor's computer, no Android Studio. Each version on main leaves
+# its two APKs in D:\Levite\Compilados; each pull request leaves them in D:\Levite\Revisados to try before merging.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  android:
+    name: APKs del teléfono y del radio
+    # The pastor's computer (a self-hosted runner registered for this repository): its minutes are free.
+    runs-on: [self-hosted, Windows]
+    defaults:
+      run:
+        shell: 'powershell -NoProfile -ExecutionPolicy Bypass -Command ". ''{0}''; exit $LASTEXITCODE"'
+    env:
+      RUNNER_TRACKING_ID: ""
+      GRADLE_FLAGS: -Dorg.gradle.daemon.idletimeout=7200000
+    steps:
+      # The runner's service account differs from the folder's owner: trust it, as Levite does.
+      - name: Trust the work folder
+        run: |
+          $dir = '${{ github.workspace }}'.Replace('\', '/')
+          if (-not ((git config --system --get-all safe.directory) -contains $dir)) { git config --system --add safe.directory $dir }
+          foreach ($lock in @('.git\config.lock', '.git\index.lock', '.git\shallow.lock')) {
+            $path = Join-Path '${{ github.workspace }}' $lock
+            if (Test-Path $path) { Remove-Item -Force $path }
+          }
+          exit 0
+      - uses: actions/checkout@v7
+        with:
+          clean: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: ./gradlew.bat $env:GRADLE_FLAGS assembleDebug
+      - name: Copy the APKs
+        run: |
+          $phone = [regex]::Match((Get-Content telefono/build.gradle.kts -Raw), 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
+          $radio = [regex]::Match((Get-Content radio/build.gradle.kts -Raw), 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
+          if ('${{ github.event_name }}' -eq 'pull_request') {
+            $dest = 'D:\Levite\Revisados'
+            $tag = '-pr${{ github.event.pull_request.number }}'
+          } else {
+            $dest = 'D:\Levite\Compilados'
+            $tag = ''
+          }
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Copy-Item telefono/build/outputs/apk/debug/telefono-debug.apk "$dest\LetMeKnow-Telefono-$phone$tag.apk" -Force -ErrorAction Stop
+          Copy-Item radio/build/outputs/apk/debug/radio-debug.apk "$dest\LetMeKnow-Radio-$radio$tag.apk" -Force -ErrorAction Stop
+          "Copied LetMeKnow-Telefono-$phone$tag.apk and LetMeKnow-Radio-$radio$tag.apk to $dest"
