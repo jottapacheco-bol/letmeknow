@@ -63,7 +63,42 @@ object Settings {
     private fun conversation(n: org.bolcr.letmeknow.shared.Notice) = n.pkg + (if (n.work) "@work" else "") + "|" + n.title.ifBlank { n.key }
 
     fun muted(n: org.bolcr.letmeknow.shared.Notice): Boolean =
-        muted() || (quiet[conversation(n)] ?: 0L) > System.currentTimeMillis()
+        muted() || conversation(n) in foreverIds || (quiet[conversation(n)] ?: 0L) > System.currentTimeMillis()
+
+    /** A conversation silenced for good ("Siempre"), kept on the radio until "Volver a oír". */
+    data class Forever(val id: String, val name: String, val app: String)
+
+    @Volatile private var forever: List<Forever> = emptyList()
+    @Volatile private var foreverIds: Set<String> = emptySet()
+
+    fun forever(): List<Forever> = forever
+
+    /** Reads the ones silenced for good; once, when the radio's service starts. */
+    fun load(c: Context) {
+        val arr = try { org.json.JSONArray(prefs(c).getString("forever", "[]")) } catch (e: Exception) { org.json.JSONArray() }
+        val list = (0 until arr.length()).map { i ->
+            arr.getJSONObject(i).let { Forever(it.optString("id"), it.optString("name"), it.optString("app")) }
+        }.filter { it.id.isNotEmpty() }
+        forever = list
+        foreverIds = list.map { it.id }.toSet()
+    }
+
+    private fun saveForever(c: Context, list: List<Forever>) {
+        forever = list
+        foreverIds = list.map { it.id }.toSet()
+        val arr = org.json.JSONArray()
+        list.forEach { arr.put(org.json.JSONObject().put("id", it.id).put("name", it.name).put("app", it.app)) }
+        prefs(c).edit().putString("forever", arr.toString()).apply()
+        changed()
+    }
+
+    fun muteForever(c: Context, n: org.bolcr.letmeknow.shared.Notice) {
+        val id = conversation(n)
+        val app = if (n.work) "${n.app} · Trabajo" else n.app
+        saveForever(c, forever.filter { it.id != id } + Forever(id, n.title.ifBlank { n.app }, app))
+    }
+
+    fun hearAgain(c: Context, id: String) = saveForever(c, forever.filter { it.id != id })
 
     fun mute(n: org.bolcr.letmeknow.shared.Notice, until: Long) {
         if (until == 0L) quiet.remove(conversation(n)) else quiet[conversation(n)] = until

@@ -22,7 +22,9 @@ class RadioService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Crash.install(this)
         Emoji.start(this)
+        Settings.load(this)
         startForeground(1, notice())
         overlay = Overlay(this) { link.send(it) }
         link = Link(this, ::message) { host ->
@@ -111,6 +113,39 @@ class Starter : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         RadioService.start(context)
     }
+}
+
+/**
+ * When the app falls, what went wrong is kept on the radio and shown on LetMeKnow's screen next time, so a photo of
+ * it says where to fix it.
+ */
+object Crash {
+    private fun prefs(c: Context) = c.getSharedPreferences("crash", Context.MODE_PRIVATE)
+
+    fun install(c: Context) {
+        val app = c.applicationContext
+        val before = Thread.getDefaultUncaughtExceptionHandler()
+        if (before is Catcher) return
+        Thread.setDefaultUncaughtExceptionHandler(Catcher(app, before))
+    }
+
+    private class Catcher(val app: Context, val before: Thread.UncaughtExceptionHandler?) : Thread.UncaughtExceptionHandler {
+        override fun uncaughtException(t: Thread, e: Throwable) {
+            runCatching {
+                val trace = android.util.Log.getStackTraceString(e).lines()
+                    .filter { it.isNotBlank() }
+                    .take(14).joinToString("\n")
+                prefs(app).edit().putLong("at", System.currentTimeMillis())
+                    .putString("what", "${BuildConfig.VERSION_NAME}\n$trace").commit()
+            }
+            before?.uncaughtException(t, e)
+        }
+    }
+
+    /** The last fall, or null. */
+    fun last(c: Context): String? = prefs(c).getString("what", null)
+    fun at(c: Context): Long = prefs(c).getLong("at", 0L)
+    fun clear(c: Context) = prefs(c).edit().clear().apply()
 }
 
 /** Today's emojis, carried in the app (the radio's Android 10 shows a box for the new ones). */

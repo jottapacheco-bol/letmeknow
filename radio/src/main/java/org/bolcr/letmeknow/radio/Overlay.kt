@@ -278,7 +278,9 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                         1 -> {
                             val width = context.resources.displayMetrics.widthPixels
                             params.y = (startY + dy).toInt().coerceAtLeast(0)
-                            params.x = (startX + if (fromEnd) -dx else dx).toInt().coerceIn(0, width / 2)
+                            // All the way across the screen; on letting go they stick to the nearer side.
+                            val room = (width - (bubbles?.width ?: 0)).coerceAtLeast(0)
+                            params.x = (startX + if (fromEnd) -dx else dx).toInt().coerceIn(0, room)
                             bubbles?.let { runCatching { wm.updateViewLayout(it, params) } }
                         }
                         2 -> ghost?.follow(dx, dy)
@@ -410,11 +412,12 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         val root = bubbles ?: return
         if (left != Settings.bubblesLeft(context)) {
             // The same spot on screen, measured from the other edge.
-            params.x = (width - params.x - root.width).coerceIn(0, width / 2)
+            params.x = (width - params.x - root.width).coerceIn(0, (width - root.width).coerceAtLeast(0))
             Settings.setBubblesLeft(context, left)
             params.gravity = Gravity.TOP or if (left) Gravity.START else Gravity.END
             runCatching { wm.updateViewLayout(root, params) }
-            refreshBubbles(null)
+            // After the touch ends: taking away the bubble that is being touched, inside its own touch, crashed the app.
+            main.post { refreshBubbles(null) }
         }
         Settings.setBubblesY(context, params.y)
         Settings.setBubblesX(context, params.x)
@@ -1190,7 +1193,24 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             addView(icon(R.drawable.ic_power, look.strongInk, 40, null), LinearLayout.LayoutParams(look.px(40), look.px(40)))
             setOnClickListener { mute(Settings.UNTIL_OFF) }
         }
-        grid.addView(untilOff, LinearLayout.LayoutParams(0, look.px(100), 1f))
+        grid.addView(untilOff, LinearLayout.LayoutParams(0, look.px(100), 1f).apply { marginEnd = look.px(14) })
+        // For good: also after turning the car off, until "Volver a oír" on the radio's LetMeKnow screen.
+        val always = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            background = look.round(Look.WORK, 24)
+            contentDescription = "Silenciar para siempre"
+            addView(icon(R.drawable.ic_infinity, android.graphics.Color.WHITE, 44, null), LinearLayout.LayoutParams(look.px(44), look.px(36)))
+            addView(text("Siempre", 17f, android.graphics.Color.WHITE, bold = true).apply { gravity = Gravity.CENTER },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            setOnClickListener { Settings.muteForever(context, n); closePanel() }
+        }
+        grid.addView(always, LinearLayout.LayoutParams(0, look.px(100), 1.25f))
+        ObjectAnimator.ofPropertyValuesHolder(always,
+            PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.05f, 1f),
+            PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.05f, 1f)).apply {
+            duration = 1600; repeatCount = ValueAnimator.INFINITE; start()
+        }
         c.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(22) })
 
         c.addView(View(context).apply { setBackgroundColor(look.edge) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, look.px(1).coerceAtLeast(1)).apply { topMargin = look.px(22); bottomMargin = look.px(12) })

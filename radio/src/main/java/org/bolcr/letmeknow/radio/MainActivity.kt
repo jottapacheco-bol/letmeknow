@@ -30,6 +30,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Crash.install(this)
+        Settings.load(this)
         RadioService.start(this)
         RadioService.watchers.add(refresh)
     }
@@ -112,6 +114,57 @@ class MainActivity : Activity() {
         }
         quiet.addView(times, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(14) })
         col.addView(card(quiet), spaced())
+
+        // Conversations silenced for good, each with "Volver a oír". Only when there is one.
+        val forever = Settings.forever()
+        if (forever.isNotEmpty()) {
+            val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            list.addView(row().apply {
+                addView(ImageView(this@MainActivity).apply {
+                    setImageResource(R.drawable.ic_infinity)
+                    setColorFilter(Look.WORK, PorterDuff.Mode.SRC_IN)
+                }, LinearLayout.LayoutParams(look.px(40), look.px(34)))
+                addView(text("Silenciados para siempre", 22f, look.ink, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(14) })
+            })
+            forever.forEach { f ->
+                val r = row().apply {
+                    background = look.round(look.chip, 20)
+                    setPadding(look.px(14), look.px(12), look.px(14), look.px(12))
+                }
+                r.addView(text(f.name.take(1).uppercase(), 24f, android.graphics.Color.WHITE, true).apply {
+                    gravity = Gravity.CENTER
+                    background = look.oval(Look.avatarColor(f.name))
+                }, LinearLayout.LayoutParams(look.px(56), look.px(56)))
+                r.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(text(f.name, 22f, look.ink, true).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END })
+                    addView(text(f.app, 16f, look.soft, false))
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(16); marginEnd = look.px(12) })
+                val again = pill("Volver a oír", Look.GREEN, Look.ON_GREEN) {}
+                again.setOnClickListener {
+                    // A green check, then it leaves the list; from now on it shows and sounds again.
+                    again.text = "✓"
+                    r.animate().translationX(look.px(120).toFloat()).alpha(0f).setStartDelay(350).setDuration(300)
+                        .withEndAction { Settings.hearAgain(this, f.id); build() }.start()
+                }
+                r.addView(again)
+                list.addView(r, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(12) })
+            }
+            col.addView(card(list), spaced())
+        }
+
+        // The last time the app fell: what went wrong, for a photo.
+        Crash.last(this)?.let { what ->
+            val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            box.addView(row().apply {
+                val at = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(java.util.Date(Crash.at(this@MainActivity)))
+                addView(text("La app se cerró ($at)", 22f, Look.RED, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(pill("Borrar", look.chip, look.ink) { Crash.clear(this@MainActivity); build() })
+            })
+            box.addView(text(what, 14f, look.soft, false).apply { typeface = android.graphics.Typeface.MONOSPACE },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(10) })
+            col.addView(card(box), spaced())
+        }
 
         val looks = row()
         listOf("Como el radio", "Claro", "Oscuro").forEachIndexed { i, name ->
