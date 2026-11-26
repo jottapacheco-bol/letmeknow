@@ -64,15 +64,10 @@ class Speaker(context: Context) {
         }.apply { isDaemon = true }.start()
     }
 
-    private val audio = app.getSystemService(android.media.AudioManager::class.java)
     private val voiceAttributes = AudioAttributes.Builder()
         // Like the navigation's voice: the music goes down while it reads.
         .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-        .build()
-    /** Asked while it reads, so the radio lowers the music and lets the voice through; given back at the end. */
-    private val focus = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-        .setAudioAttributes(voiceAttributes)
         .build()
 
     private fun play(file: java.io.File): Boolean {
@@ -84,7 +79,6 @@ class Speaker(context: Context) {
             // A player that breaks halfway is let go too, so the next reading starts clean.
             p.setOnErrorListener { mp, _, _ -> finished(mp); true }
             p.prepare()
-            runCatching { audio.requestAudioFocus(focus) }
             p.start()
             player = p
             true
@@ -98,7 +92,6 @@ class Speaker(context: Context) {
     private fun finished(p: MediaPlayer) {
         runCatching { p.release() }
         if (player === p) player = null
-        runCatching { audio.abandonAudioFocusRequest(focus) }
         onSpeaking(false)
     }
 
@@ -111,7 +104,6 @@ class Speaker(context: Context) {
         turn++
         player?.let { runCatching { it.stop() }; runCatching { it.release() } }
         player = null
-        runCatching { audio.abandonAudioFocusRequest(focus) }
         pending = null
         if (ready) tts.stop()
         onSpeaking(false)
