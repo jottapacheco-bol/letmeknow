@@ -22,6 +22,14 @@ object Settings {
     fun autoRead(c: Context): Boolean = prefs(c).getBoolean("autoRead", false)
     fun setAutoRead(c: Context, v: Boolean) = prefs(c).edit().putBoolean("autoRead", v).apply()
 
+    /** Say "Notificación nueva de …" when one arrives and is not read whole. Off by default. */
+    fun announce(c: Context): Boolean = prefs(c).getBoolean("announce", false)
+    fun setAnnounce(c: Context, v: Boolean) = prefs(c).edit().putBoolean("announce", v).apply()
+
+    /** The announcement also says how many unread messages that conversation has. Off by default. */
+    fun announceCount(c: Context): Boolean = prefs(c).getBoolean("announceCount", false)
+    fun setAnnounceCount(c: Context, v: Boolean) = prefs(c).edit().putBoolean("announceCount", v).apply()
+
     /** The message's letters: 0.8 to 1.6 times the drawn size (A− and A+). */
     fun textScale(c: Context): Float = prefs(c).getFloat("textScale", 1f)
     fun setTextScale(c: Context, v: Float) =

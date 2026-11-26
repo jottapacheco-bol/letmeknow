@@ -68,6 +68,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     private val silence: () -> Unit = { main.post { refreshBubbles(null) } }
 
     fun start() {
+        // A reading that ends lets the next thing in line sound.
+        speaker.onIdle = { next() }
         Settings.watchers.add(silence)
         Inbox.watch(watcher)
         main.post(tick)
@@ -93,12 +95,10 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     }
 
     private fun changed(arrived: Notice?) {
-        val autoRead = arrived != null && !Settings.muted(arrived) && Settings.autoRead(context)
-        // With "leer solo" on, an audio message is played instead of reading its words.
-        if (arrived?.audio != null) preload(arrived, play = autoRead)
+        if (arrived?.audio != null) preload(arrived)
         if (arrived != null && !Settings.muted(arrived)) {
             if (Settings.sound(context)) speaker.chime()
-            if (autoRead && arrived.audio == null) main.postDelayed({ speaker.read(arrived) }, 600)
+            arrive(arrived)
         }
         val open = openKey
         if (open != null) {
@@ -610,6 +610,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
 
     fun closePanel(animated: Boolean = true) {
         val root = panel ?: return
+        main.post { releaseLater() }
         home?.let { runCatching { context.unregisterReceiver(it) } }
         home = null
         stopAudio()
@@ -658,6 +659,11 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         openKey = key
         dictation?.stop()
         stopAudio()
+        // It arrived while another one was open: now that it is in front, it is read (or its audio plays).
+        if (later.remove(key)) {
+            if (n.audio != null) startRow = key
+            else main.postDelayed({ if (openKey == key && !busy()) speaker.read(n) else queue.addFirst(Turn(key, whole = true)) }, 500)
+        }
         fill(c, whole = true)
         val whole = row(Gravity.TOP)
         c.addView(whole, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -681,7 +687,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             v.animate().alpha(1f).translationX(0f).setStartDelay(i * 60L).setDuration(300).start()
         }
         val listen = action(R.drawable.ic_speaker, "Escuchar", Look.ORANGE, Look.ON_ORANGE, size = size) {
-            if (speaker.speaking) speaker.stop() else speaker.read(n)
+            if (speaker.speaking) { speaker.stop(); next() } else speaker.read(n)
         }
         place(listen, 0)
         speaker.onSpeaking = { on -> beat(listen.getChildAt(0), on) }
@@ -977,6 +983,67 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     /** The audio of the last message that brought one, already loaded so it starts at the touch. */
     private var ready: Pair<String, android.media.MediaPlayer>? = null
 
+    // ---------------------------------------------------------------- what sounds, one after the other
+
+    /** One thing to say or play: the whole message ([whole], its audio if it brought one) or just who sent it. */
+    private class Turn(val key: String, val whole: Boolean)
+
+    /** What waits to sound, in order; nothing starts while something else sounds. */
+    private val queue = ArrayDeque<Turn>()
+    /** Messages to read whole once the window closes (they arrived while it was open), or when opened on them. */
+    private val later = LinkedHashSet<String>()
+    /** The audio that should start by itself as soon as it finishes loading. */
+    private var waitingAudio: String? = null
+
+    /**
+     * A new message: with "leer solo" it is read (or its audio played); with the window open on another one it is
+     * only announced and read when the window closes; with "anunciar" just who sent it.
+     */
+    private fun arrive(n: Notice) {
+        val whole = Settings.autoRead(context)
+        when {
+            whole && panel != null && openKey != n.key -> { later.add(n.key); queue.add(Turn(n.key, whole = false)) }
+            whole -> queue.add(Turn(n.key, whole = true))
+            Settings.announce(context) -> queue.add(Turn(n.key, whole = false))
+            else -> return
+        }
+        // After the arrival sound.
+        main.postDelayed({ next() }, 700)
+    }
+
+    private fun busy(): Boolean =
+        speaker.speaking || waitingAudio != null ||
+            runCatching { player?.isPlaying == true || ready?.second?.isPlaying == true }.getOrDefault(false)
+
+    /** Starts the next thing in line, if nothing is sounding. */
+    private fun next() {
+        if (busy()) return
+        while (true) {
+            val t = queue.removeFirstOrNull() ?: return
+            val n = Inbox.get(t.key) ?: continue
+            if (t.whole && panel != null && openKey != t.key) { later.add(t.key); continue }
+            if (!t.whole) { speaker.announce(n, if (Settings.announceCount(context)) Inbox.count(n.key) else 0); return }
+            if (n.audio != null) playAlone(n) else speaker.read(n)
+            return
+        }
+    }
+
+    /** Its audio, with nothing open: from the loaded player, or as soon as it loads. */
+    private fun playAlone(n: Notice) {
+        val r = ready
+        if (r == null || r.first != audioId(n)) { waitingAudio = audioId(n); preload(n); return }
+        speaker.stop()
+        r.second.setOnCompletionListener { it.seekTo(0); main.post { next() } }
+        runCatching { r.second.start() }.onFailure { main.post { next() } }
+    }
+
+    /** The window closed: what waited is read now, in the order it came. */
+    private fun releaseLater() {
+        later.forEach { queue.add(Turn(it, whole = true)) }
+        later.clear()
+        main.postDelayed({ next() }, 400)
+    }
+
     /** Which audio: the conversation and the audio's size (a new voice message in the same chat is another one). */
     private fun audioId(n: Notice) = n.key + "#" + (n.audio?.size ?: 0)
 
@@ -984,24 +1051,26 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
      * Loads [n]'s audio in the background as soon as it arrives; with [play], it starts by itself once loaded (after
      * the arrival sound), through the car's speakers.
      */
-    private fun preload(n: Notice, play: Boolean) {
-        if (n.audio == null || ready?.first == audioId(n)) return
+    private val loading = HashSet<String>()
+
+    private fun preload(n: Notice) {
+        val id = audioId(n)
+        if (n.audio == null || ready?.first == id || !loading.add(id)) return
         Thread {
-            val mp = prepareAudio(n) ?: return@Thread
+            val mp = prepareAudio(n) ?: run {
+                // The radio can't play it: the words are read instead.
+                main.post { loading.remove(id); if (waitingAudio == id) { waitingAudio = null; speaker.read(n) } }
+                return@Thread
+            }
             main.post {
+                loading.remove(id)
                 ready?.second?.let { old ->
                     // One that is still playing by itself finishes first; it is let go when it ends.
                     if (runCatching { old.isPlaying }.getOrDefault(false)) old.setOnCompletionListener { it.release() }
                     else runCatching { old.release() }
                 }
                 ready = audioId(n) to mp
-                if (play) main.postDelayed({
-                    if (ready?.second === mp && player == null) {
-                        speaker.stop()
-                        mp.setOnCompletionListener { it.seekTo(0) }
-                        runCatching { mp.start() }
-                    }
-                }, 700)
+                if (waitingAudio == audioId(n)) { waitingAudio = null; playAlone(n) }
             }
         }.apply { isDaemon = true }.start()
     }
@@ -1035,6 +1104,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     }
 
     private var playerKey: String? = null
+    /** The message whose audio row starts playing as soon as it is shown. */
+    private var startRow: String? = null
 
     /** Stops the audio; the player stays loaded for that message, so opening it again starts at once too. */
     private fun stopAudio() {
@@ -1111,7 +1182,9 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             line.scaleX = 0f
             time.text = clock(total)
             it.seekTo(0)
+            next()
         }
+        if (startRow == n.key) { startRow = null; button.post { if (!mp.isPlaying) button.performClick() } }
         // Already playing by itself ("leer solo"): the line and the button pick it up where it is.
         if (mp.isPlaying) {
             fill.start()

@@ -1,5 +1,11 @@
 # LetMeKnow del radio
 
+## 1.0.2
+
+- Lo que suena hace fila: un mensaje que se lee solo espera a que termine el audio o la lectura de antes.
+- Con una ventana abierta, el que llega solo se anuncia («Notificación nueva de…») y se lee al cerrar la ventana o al pasar a ese mensaje.
+- Ajustes nuevos en la pantalla del radio, «Al llegar un mensaje»: anunciar los nuevos y decir cuántos mensajes sin leer tiene.
+
 ## 1.0.1
 
 - Voz de hombre o de mujer para cada conversación (al sostener la burbuja) y la de siempre en la pantalla del radio.
