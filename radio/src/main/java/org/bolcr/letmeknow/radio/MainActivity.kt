@@ -94,10 +94,20 @@ class MainActivity : Activity() {
         if (muted) quietHead.addView(pill("Quitar silencio", Look.ORANGE, Look.ON_ORANGE) { Settings.mutedUntil = 0L; build() })
         quiet.addView(quietHead)
         val times = row()
-        listOf(15 to "15 min", 30 to "30 min", 60 to "1 h", 120 to "2 h", -1 to "⏻ Hasta apagar").forEachIndexed { i, (m, label) ->
+        listOf(15 to "15 min", 30 to "30 min", 60 to "1 h", 120 to "2 h", -1 to "Hasta apagar").forEachIndexed { i, (m, label) ->
             times.addView(pill(label, look.chip, look.ink) {
                 Settings.mutedUntil = if (m < 0) Settings.UNTIL_OFF else System.currentTimeMillis() + m * 60_000L
                 build()
+            }.apply {
+                if (m < 0) {
+                    // The radio's font has no power glyph: draw the icon instead.
+                    val power = getDrawable(R.drawable.ic_power)!!.mutate()
+                    power.setTint(look.ink)
+                    power.setBounds(0, 0, look.px(30), look.px(30))
+                    text = android.text.SpannableString("  $label").apply {
+                        setSpan(android.text.style.ImageSpan(power, android.text.style.DynamicDrawableSpan.ALIGN_BOTTOM), 0, 1, 0)
+                    }
+                }
             }, LinearLayout.LayoutParams(0, look.px(72), if (m < 0) 1.8f else 1f).apply { if (i < 4) marginEnd = look.px(12) })
         }
         quiet.addView(times, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(14) })

@@ -425,7 +425,17 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     private fun createPanel(): LinearLayout {
         closePanel(animated = false)
         look = Look(context)
-        val root = FrameLayout(context).apply {
+        // The radio's back button closes the window.
+        val root = object : FrameLayout(context) {
+            override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+                if (event.keyCode == android.view.KeyEvent.KEYCODE_BACK) {
+                    if (event.action == android.view.KeyEvent.ACTION_UP && panel === this) closePanel()
+                    return true
+                }
+                return super.dispatchKeyEvent(event)
+            }
+        }.apply {
+            isFocusableInTouchMode = true
             setBackgroundColor(look.scrim)
             setOnClickListener { closePanel() }
             alpha = 0f
@@ -446,7 +456,11 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         root.addView(c, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
             setMargins(m, bar + m, m, m)
         })
-        wm.addView(root, overlayParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // Focusable, unlike the bubbles, so it hears the back button.
+        wm.addView(root, overlayParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
+            flags = flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+        })
+        root.requestFocus()
         panel = root
         card = c
         // It grows out of the bubbles' corner.
@@ -755,33 +769,34 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         c.addView(h)
 
         val ripples = Ripples(context, Look.BLUE)
-        val micSize = look.px(160)
+        val micSize = look.px(140)
         val mic = icon(R.drawable.ic_mic, Look.ON_BLUE, 72, "Escuchando").apply {
             background = look.oval(Look.BLUE)
-            setPadding(look.px(44), look.px(44), look.px(44), look.px(44))
+            setPadding(look.px(38), look.px(38), look.px(38), look.px(38))
             elevation = look.px(12).toFloat()
         }
         val micBox = FrameLayout(context).apply {
-            addView(ripples, FrameLayout.LayoutParams(look.px(300), look.px(300), Gravity.CENTER))
+            addView(ripples, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(mic, FrameLayout.LayoutParams(micSize, micSize, Gravity.CENTER))
         }
-        c.addView(micBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, look.px(250)))
-        val words = text("", 42f, look.ink, bold = true).apply { gravity = Gravity.CENTER; minLines = 2 }
-        c.addView(words, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = look.px(20) })
+        // The microphone takes what is left, so the buttons below always fit on the radio's screen.
+        c.addView(micBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        val words = text("", 36f, look.ink, bold = true).apply { gravity = Gravity.CENTER; minLines = 2; maxLines = 3; ellipsize = TextUtils.TruncateAt.START }
+        c.addView(words, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = look.px(12) })
 
         var said = ""
         val d = Dictation(context,
             onWords = { w, final -> said = w; words.text = if (final) w else "$w…" },
             onLevel = { level -> mic.scaleX = 1f + level * 0.12f; mic.scaleY = mic.scaleX },
-            onFail = { if (said.isBlank()) words.text = "No le oí. Toque ↻ para intentar otra vez."; ripples.stop() })
+            onFail = { if (said.isBlank()) words.text = "No le oí. Toque «Otra vez»."; ripples.stop() })
         dictation = d
 
         val actions = row(Gravity.CENTER)
-        actions.addView(action(R.drawable.ic_close, "Cancelar", look.chip, Look.RED) { showRead(key, fade = true) }, spaced())
-        actions.addView(action(R.drawable.ic_redo, "Otra vez", look.chip, look.ink) {
+        actions.addView(action(R.drawable.ic_close, "Cancelar", look.chip, Look.RED, size = look.px(104)) { showRead(key, fade = true) }, spaced())
+        actions.addView(action(R.drawable.ic_redo, "Otra vez", look.chip, look.ink, size = look.px(104)) {
             said = ""; words.text = ""; ripples.start(); d.start()
         }, spaced())
-        actions.addView(action(R.drawable.ic_send, "Enviar", Look.GREEN, Look.ON_GREEN) {
+        actions.addView(action(R.drawable.ic_send, "Enviar", Look.GREEN, Look.ON_GREEN, size = look.px(104)) {
             if (said.isNotBlank()) {
                 send(Protocol.message(Protocol.REPLY) { put("key", key).put("text", said) })
                 done(key, closeAfter = false)
@@ -839,7 +854,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             c.addView(line, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = look.px(18) })
         }
         val back = row(Gravity.CENTER)
-        back.addView(action(R.drawable.ic_prev, "Volver", look.chip, look.ink) { showRead(key, fade = true) })
+        back.addView(action(R.drawable.ic_prev, "Volver", look.chip, look.ink, size = look.px(96)) { showRead(key, fade = true) })
         c.addView(back)
     }
 
