@@ -118,7 +118,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         var first = true
         notices.take(4).forEach { n ->
             val b = bubble(n)
-            root.addView(b, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(84)).apply { if (!first) topMargin = look.px(16) })
+            root.addView(b, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(84)).apply { if (!first) topMargin = look.px(22) })
             first = false
             if (n.key == arrived?.key) enter(b)
         }
@@ -137,7 +137,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             orientation = LinearLayout.VERTICAL
             clipChildren = false
             clipToPadding = false
-            val p = look.px(26)
+            // Room for the bubbles' shadow, which is big on purpose.
+            val p = look.px(38)
             setPadding(p, p, p, p)
         }
         val params = overlayParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -159,7 +160,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             // A deep, dark shadow drawn by hand (Android's own is barely visible on the radio): the bubble floats
             // apart from everything behind it. It spills over the bubbles' padding, which doesn't clip it.
             background = FloatShadow(look.round(look.glass, 42, stroke = true),
-                android.graphics.Color.argb(if (look.dark) 190 else 110, 0, 0, 0), look.px(14).toFloat(), look.px(7).toFloat())
+                android.graphics.Color.argb(if (look.dark) 245 else 170, 0, 0, 0), look.px(22).toFloat(), look.px(12).toFloat())
             setPadding(look.px(10), 0, look.px(12), 0)
             contentDescription = "${n.title}, ${n.app}"
         }
@@ -1443,7 +1444,7 @@ class FloatShadow(private val glass: android.graphics.drawable.Drawable, color: 
         val r = b.height() / 2f
         canvas.save()
         canvas.clipOutPath(shape)
-        canvas.drawRoundRect(b.left + blur * 0.2f, b.top + drop, b.right - blur * 0.2f, b.bottom + drop, r, r, paint)
+        canvas.drawRoundRect(b.left - blur * 0.15f, b.top + drop * 0.6f, b.right + blur * 0.15f, b.bottom + drop, r, r, paint)
         canvas.restore()
         glass.draw(canvas)
     }
