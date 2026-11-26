@@ -60,18 +60,22 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
 
     private val tick = object : Runnable {
         override fun run() {
-            if (Settings.mutedUntil != 0L && !Settings.muted()) Settings.mutedUntil = 0L
+            Settings.tidy()
             refreshBubbles(null)
             main.postDelayed(this, 30_000)
         }
     }
 
+    private val silence: () -> Unit = { main.post { refreshBubbles(null) } }
+
     fun start() {
+        Settings.watchers.add(silence)
         Inbox.watch(watcher)
         main.post(tick)
     }
 
     fun stop() {
+        Settings.watchers.remove(silence)
         Inbox.unwatch(watcher)
         main.removeCallbacks(tick)
         closePanel(animated = false)
@@ -83,7 +87,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     private fun allowed() = AndroidSettings.canDrawOverlays(context)
 
     private fun changed(arrived: Notice?) {
-        if (arrived != null && !Settings.muted()) {
+        if (arrived != null && !Settings.muted(arrived)) {
             if (Settings.sound(context)) speaker.chime()
             if (Settings.autoRead(context)) main.postDelayed({ speaker.read(arrived) }, 600)
         }
@@ -102,9 +106,9 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     private fun refreshBubbles(arrived: Notice?) {
         if (!allowed()) return
         look = Look(context)
-        val notices = Inbox.all
-        val muted = Settings.muted()
-        if (notices.isEmpty() && !muted || panel != null) {
+        // Silenced conversations (or everything, from the radio's screen) are not shown until the silence ends.
+        val notices = if (Settings.muted()) emptyList() else Inbox.all.filter { !Settings.muted(it) }
+        if (notices.isEmpty() || panel != null) {
             bubbles?.visibility = View.GONE
             return
         }
@@ -112,11 +116,11 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         root.visibility = View.VISIBLE
         root.removeAllViews()
         root.gravity = if (Settings.bubblesLeft(context)) Gravity.START else Gravity.END
-        root.addView(bellBubble(muted), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        if (muted) return
+        var first = true
         notices.take(4).forEach { n ->
             val b = bubble(n)
-            root.addView(b, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(84)).apply { topMargin = look.px(16) })
+            root.addView(b, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(84)).apply { if (!first) topMargin = look.px(16) })
+            first = false
             if (n.key == arrived?.key) enter(b)
         }
         if (notices.size > 4) {
@@ -148,37 +152,6 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         return root
     }
 
-    private fun bellBubble(muted: Boolean): View {
-        val size = look.px(64)
-        val holder = FrameLayout(context)
-        if (muted) {
-            val left = Settings.mutedUntil - System.currentTimeMillis()
-            val label = if (Settings.mutedUntil == Settings.UNTIL_OFF) "—" else "${(left / 60_000 + 1)} min"
-            val row = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                background = look.round(look.glass, 42, stroke = true)
-                setPadding(look.px(10), look.px(8), look.px(22), look.px(8))
-                elevation = look.px(8).toFloat()
-            }
-            val ring = Ring(context, look, Settings.mutedUntil).apply { addIcon(this, R.drawable.ic_bell_off) }
-            row.addView(ring, LinearLayout.LayoutParams(size, size))
-            row.addView(text(label, 22f, look.ink, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(12) })
-            holder.addView(row)
-            drag(holder) { openMute() }
-        } else {
-            val bell = icon(R.drawable.ic_bell, look.ink, 30, "Silenciar").apply {
-                background = look.oval(look.glass)
-                elevation = look.px(8).toFloat()
-                scaleType = ImageView.ScaleType.CENTER_INSIDE
-                setPadding(look.px(17), look.px(17), look.px(17), look.px(17))
-            }
-            holder.addView(bell, FrameLayout.LayoutParams(size, size))
-            drag(holder) { openMute() }
-        }
-        return holder
-    }
-
     /** One conversation: the photo with the app's icon, the name, the app and time, and how many messages. */
     private fun bubble(n: Notice): View {
         val row = LinearLayout(context).apply {
@@ -208,7 +181,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             setPadding(look.px(8), 0, look.px(8), 0)
         }
         row.addView(badge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(40)))
-        drag(row, onThrow = { Inbox.remove(n.key) }) { openPanel(n.key) }
+        drag(row, onThrow = { Inbox.remove(n.key) }, onHold = { openMute(n) }) { openPanel(n.key) }
         return row
     }
 
@@ -238,19 +211,19 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
      * ([onThrow]) sends it off the screen and removes it from the radio (it comes back if a new message arrives).
      */
     @SuppressLint("ClickableViewAccessibility")
-    private fun drag(v: View, onThrow: (() -> Unit)? = null, onTap: () -> Unit) {
+    private fun drag(v: View, onThrow: (() -> Unit)? = null, onHold: (() -> Unit)? = null, onTap: () -> Unit) {
         val slop = ViewConfiguration.get(context).scaledTouchSlop
         val fling = ViewConfiguration.get(context).scaledMinimumFlingVelocity * 6
         var downY = 0f
         var downX = 0f
         var startY = 0
         var startX = 0
-        // 0 nothing yet, 1 moving the bubbles, 2 throwing this one.
+        // 0 nothing yet, 1 moving the bubbles, 2 throwing this one, 3 held still (lifting it opens [onHold]).
         var gesture = 0
         var tracker: VelocityTracker? = null
         val hold = Runnable {
             if (gesture == 0) {
-                gesture = 1
+                gesture = 3
                 v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                 v.animate().scaleX(1.06f).scaleY(1.06f).setDuration(120).start()
             }
@@ -269,6 +242,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                     tracker?.addMovement(e)
                     val dx = e.rawX - downX
                     val dy = e.rawY - downY
+                    if (gesture == 3 && (abs(dx) > slop || abs(dy) > slop)) gesture = 1
                     if (gesture == 0 && (abs(dx) > slop || abs(dy) > slop)) {
                         main.removeCallbacks(hold)
                         gesture = if (onThrow != null && abs(dx) > abs(dy) * 1.3f) 2 else 1
@@ -299,6 +273,12 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                         1 -> {
                             view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
                             settle(params, e.rawX)
+                        }
+                        3 -> {
+                            view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                            if (e.actionMasked == MotionEvent.ACTION_UP) {
+                                if (onHold != null) onHold() else settle(params, e.rawX)
+                            }
                         }
                         2 -> {
                             val dx = e.rawX - downX
@@ -712,46 +692,51 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     }
 
     /** Silence for a while, the arrival sound and reading aloud by itself. */
-    private fun openMute() {
+    /** Holding a bubble: silence that conversation for a while; below, the sound, reading aloud and the letters. */
+    private fun openMute(n: Notice) {
         if (!allowed()) return
         val c = createPanel()
         mode = Mode.MUTE
         openKey = null
         val h = row(Gravity.CENTER_VERTICAL)
-        h.addView(icon(R.drawable.ic_bell_off, look.ink, 36, null), LinearLayout.LayoutParams(look.px(40), look.px(40)))
-        h.addView(text("Silenciar", 30f, look.ink, bold = true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(14) })
+        h.addView(avatar(n, 64), LinearLayout.LayoutParams(look.px(64), look.px(64)))
+        val names = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        names.addView(row(Gravity.CENTER_VERTICAL).apply {
+            addView(icon(R.drawable.ic_bell_off, look.ink, 30, null), LinearLayout.LayoutParams(look.px(30), look.px(30)))
+            addView(text("Silenciar", 28f, look.ink, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(10) })
+        })
+        names.addView(text(n.title.ifBlank { n.app }, 20f, look.soft).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END })
+        h.addView(names, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(18) })
         h.addView(small(R.drawable.ic_close, "Cerrar") { closePanel() })
         c.addView(h)
 
-        val minutes = listOf(15 to "15 min", 30 to "30 min", 60 to "1 h", 120 to "2 h")
+        fun mute(until: Long) {
+            Settings.mute(n, until)
+            closePanel()
+        }
+        val minutes = listOf(15 to "15", 30 to "30", 60 to "60")
         val grid = row(Gravity.CENTER_VERTICAL)
-        minutes.forEachIndexed { i, (m, label) ->
-            val b = text(label, 30f, look.ink, bold = true).apply {
+        minutes.forEach { (m, label) ->
+            val b = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
                 background = look.round(look.chip, 24, stroke = true)
+                contentDescription = "Silenciar $m minutos"
+                addView(text(label, 32f, look.ink, bold = true))
+                addView(text("min", 16f, look.soft, bold = true))
                 setOnClickListener { mute(System.currentTimeMillis() + m * 60_000L) }
             }
-            grid.addView(b, LinearLayout.LayoutParams(0, look.px(88), 1f).apply { if (i < 3) marginEnd = look.px(14) })
+            grid.addView(b, LinearLayout.LayoutParams(0, look.px(100), 1f).apply { marginEnd = look.px(14) })
         }
-        c.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(22) })
-
-        val untilOff = row(Gravity.CENTER).apply {
+        val untilOff = LinearLayout(context).apply {
+            gravity = Gravity.CENTER
             background = look.round(look.strong, 24)
-            addView(icon(R.drawable.ic_power, look.strongInk, 30, null), LinearLayout.LayoutParams(look.px(30), look.px(30)))
-            addView(text("Hasta apagar el carro", 26f, look.strongInk, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(14) })
+            contentDescription = "Hasta apagar el carro"
+            addView(icon(R.drawable.ic_power, look.strongInk, 40, null), LinearLayout.LayoutParams(look.px(40), look.px(40)))
             setOnClickListener { mute(Settings.UNTIL_OFF) }
         }
-        c.addView(untilOff, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, look.px(88)).apply { topMargin = look.px(14) })
-
-        if (Settings.muted()) {
-            val on = row(Gravity.CENTER).apply {
-                background = look.round(Look.ORANGE, 24)
-                addView(icon(R.drawable.ic_bell, Look.ON_ORANGE, 30, null), LinearLayout.LayoutParams(look.px(30), look.px(30)))
-                addView(text("Quitar el silencio", 26f, Look.ON_ORANGE, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(14) })
-                setOnClickListener { mute(0L) }
-            }
-            c.addView(on, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, look.px(88)).apply { topMargin = look.px(14) })
-        }
+        grid.addView(untilOff, LinearLayout.LayoutParams(0, look.px(100), 1f))
+        c.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(22) })
 
         c.addView(View(context).apply { setBackgroundColor(look.edge) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, look.px(1).coerceAtLeast(1)).apply { topMargin = look.px(22); bottomMargin = look.px(12) })
         c.addView(toggle(R.drawable.ic_bell, "Sonido al llegar", Settings.sound(context)) { Settings.setSound(context, it) })
@@ -780,11 +765,6 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             r.addView(b, LinearLayout.LayoutParams(look.px(88), look.px(64)).apply { if (i == 0) marginEnd = look.px(12) })
         }
         return r
-    }
-
-    private fun mute(until: Long) {
-        Settings.mutedUntil = until
-        closePanel()
     }
 
     /** "Listo": a green check grows, then the next conversation (or the panel closes). */
@@ -833,9 +813,6 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         minimumHeight = look.px(sizeDp)
     }
 
-    private fun addIcon(parent: FrameLayout, res: Int) {
-        parent.addView(icon(res, look.ink, 30, null), FrameLayout.LayoutParams(look.px(30), look.px(30), Gravity.CENTER))
-    }
 
     private fun row(gravity: Int) = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -1041,23 +1018,3 @@ class Wave(context: Context, private val color: Int) : View(context) {
     }
 }
 
-/** The time left of the silence, as a ring that empties. */
-class Ring(context: Context, private val look: Look, private val until: Long) : FrameLayout(context) {
-    private val start = System.currentTimeMillis()
-    private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = look.px(5).toFloat(); color = look.off }
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = look.px(5).toFloat(); color = Look.PURPLE; strokeCap = Paint.Cap.ROUND
-    }
-
-    init { setWillNotDraw(false) }
-
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        val pad = look.px(4).toFloat()
-        val r = android.graphics.RectF(pad, pad, width - pad, height - pad)
-        canvas.drawOval(r, track)
-        val left = if (until == Settings.UNTIL_OFF) 1f
-        else ((until - System.currentTimeMillis()).toFloat() / (until - start).coerceAtLeast(1)).coerceIn(0f, 1f)
-        canvas.drawArc(r, -90f, 360f * left, false, fill)
-    }
-}

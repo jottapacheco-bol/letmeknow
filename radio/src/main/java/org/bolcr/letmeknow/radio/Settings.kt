@@ -50,9 +50,35 @@ object Settings {
     fun panelY(c: Context): Int = prefs(c).getInt("panelY", -1)
     fun setPanelPlace(c: Context, x: Int, y: Int) = prefs(c).edit().putInt("panelX", x).putInt("panelY", y).apply()
 
-    /** Silenced until this time; [UNTIL_OFF] = until the car is turned off (the radio's app starts again). */
+    /** Everything silenced until this time (from the radio's screen); [UNTIL_OFF] = until the car is turned off. */
     @Volatile var mutedUntil: Long = 0L
+        set(v) { field = v; changed() }
     const val UNTIL_OFF = Long.MAX_VALUE
 
     fun muted(): Boolean = System.currentTimeMillis() < mutedUntil
+
+    /** One conversation silenced (holding its bubble), until a time. Kept until the car is turned off. */
+    private val quiet = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private fun conversation(n: org.bolcr.letmeknow.shared.Notice) = n.pkg + "|" + n.title.ifBlank { n.key }
+
+    fun muted(n: org.bolcr.letmeknow.shared.Notice): Boolean =
+        muted() || (quiet[conversation(n)] ?: 0L) > System.currentTimeMillis()
+
+    fun mute(n: org.bolcr.letmeknow.shared.Notice, until: Long) {
+        if (until == 0L) quiet.remove(conversation(n)) else quiet[conversation(n)] = until
+        changed()
+    }
+
+    /** Forgets silences that ended; true if one did (the bubbles come back). */
+    fun tidy(): Boolean {
+        val now = System.currentTimeMillis()
+        var ended = quiet.entries.removeIf { it.value <= now }
+        if (mutedUntil != 0L && mutedUntil <= now) { mutedUntil = 0L; ended = true }
+        return ended
+    }
+
+    /** Told when a silence starts or ends (the bubbles, the radio's screen). */
+    val watchers = java.util.concurrent.CopyOnWriteArraySet<() -> Unit>()
+    private fun changed() = watchers.forEach { it() }
 }

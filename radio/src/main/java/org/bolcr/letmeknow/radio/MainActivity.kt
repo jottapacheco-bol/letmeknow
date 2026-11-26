@@ -77,6 +77,32 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
         }), spaced())
 
+        // Everything silenced for a while (one conversation is silenced holding its bubble).
+        val quiet = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val muted = Settings.muted()
+        val quietHead = row()
+        quietHead.addView(ImageView(this).apply {
+            setImageResource(if (muted) R.drawable.ic_bell_off else R.drawable.ic_bell)
+            setColorFilter(if (muted) Look.PURPLE else look.ink, PorterDuff.Mode.SRC_IN)
+        }, LinearLayout.LayoutParams(look.px(34), look.px(34)))
+        val left = Settings.mutedUntil - System.currentTimeMillis()
+        quietHead.addView(text(when {
+            !muted -> "Silenciar todo"
+            Settings.mutedUntil == Settings.UNTIL_OFF -> "En silencio hasta apagar el carro"
+            else -> "En silencio, ${left / 60_000 + 1} min más"
+        }, 22f, look.ink, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(14) })
+        if (muted) quietHead.addView(pill("Quitar silencio", Look.ORANGE, Look.ON_ORANGE) { Settings.mutedUntil = 0L; build() })
+        quiet.addView(quietHead)
+        val times = row()
+        listOf(15 to "15 min", 30 to "30 min", 60 to "1 h", 120 to "2 h", -1 to "⏻ Hasta apagar").forEachIndexed { i, (m, label) ->
+            times.addView(pill(label, look.chip, look.ink) {
+                Settings.mutedUntil = if (m < 0) Settings.UNTIL_OFF else System.currentTimeMillis() + m * 60_000L
+                build()
+            }, LinearLayout.LayoutParams(0, look.px(72), if (m < 0) 1.8f else 1f).apply { if (i < 4) marginEnd = look.px(12) })
+        }
+        quiet.addView(times, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(14) })
+        col.addView(card(quiet), spaced())
+
         val looks = row()
         listOf("Como el radio", "Claro", "Oscuro").forEachIndexed { i, name ->
             val on = Settings.theme(this) == i
