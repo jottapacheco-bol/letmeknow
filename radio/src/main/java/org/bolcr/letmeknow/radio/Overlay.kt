@@ -208,8 +208,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     }
 
     /**
-     * Touching opens. Dragging up or down moves all the bubbles (also to the other side of the screen), so they never
-     * cover what is behind. Holding still fills an orange ring around the photo and opens [onHold] by itself. Pulling
+     * Touching opens. Dragging up or down, or holding a moment and then dragging anywhere, moves all the bubbles (also
+     * to the other side of the screen), so they never cover what is behind. Holding still fills an orange ring around the photo and opens [onHold] by itself. Pulling
      * a conversation sideways lifts it into its own little window that follows the finger anywhere; past half its
      * width a red ✕ shows, and only lifting the finger with the ✕ showing removes it ([onThrow]). Coming back cancels.
      */
@@ -262,9 +262,13 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                     val dx = e.rawX - downX
                     val dy = e.rawY - downY
                     if (gesture == 0 && (abs(dx) > slop || abs(dy) > slop)) {
+                        // Held a moment first (the ring had started): move the bubbles anywhere. A quick sideways
+                        // pull without holding: throw this one. Up or down: move.
+                        val held = (ring?.progress ?: 0f) > 0f
                         stopFilling()
                         view.animate().scaleX(1f).scaleY(1f).setDuration(90).start()
-                        gesture = if (onThrow != null && abs(dx) > abs(dy) * 1.3f) 2 else 1
+                        gesture = if (!held && onThrow != null && abs(dx) > abs(dy) * 1.3f) 2 else 1
+                        if (held) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                         if (gesture == 2) ghost = Ghost(view)
                     }
                     when (gesture) {
@@ -542,6 +546,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         }
         place(action(R.drawable.ic_phone, "Teléfono", look.chip, look.ink, size = size) {
             send(Protocol.message(Protocol.OPEN) { put("key", key) })
+            if (n.voice) CarAudio.open(context)
             done(key, closeAfter = true)
         }, 3)
         whole.addView(rail, LinearLayout.LayoutParams(size + look.px(40), ViewGroup.LayoutParams.MATCH_PARENT))
@@ -725,6 +730,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             addView(text("Oír", 22f, Look.ON_ORANGE, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(10) })
             setOnClickListener {
                 send(Protocol.message(Protocol.OPEN) { put("key", n.key) })
+                CarAudio.open(context)
                 done(n.key, closeAfter = true)
             }
         }
