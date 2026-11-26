@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.Drawable
 import android.net.Uri
@@ -29,11 +30,17 @@ import org.bolcr.letmeknow.shared.Ui.add
 
 /** The three permissions, whether the radio is connected, a test, and which apps go to the radio. */
 class MainActivity : Activity() {
-    private val ink = Color.rgb(28, 28, 30)
-    private val soft = Color.rgb(99, 99, 102)
-    private val blue = Color.rgb(10, 110, 230)
-    private val ok = Color.rgb(30, 140, 70)
-    private val bad = Color.rgb(200, 60, 40)
+    // Light or dark, as the phone is set (the drawings' colors: orange for the main buttons).
+    private val dark by lazy {
+        resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+    }
+    private val page by lazy { if (dark) 0xFF0E1014.toInt() else Color.WHITE }
+    private val ink by lazy { if (dark) 0xFFF2F4F7.toInt() else Color.rgb(28, 28, 30) }
+    private val soft by lazy { if (dark) 0xFFA9B1BD.toInt() else Color.rgb(90, 98, 112) }
+    private val accent by lazy { if (dark) 0xFFFF8A4C.toInt() else 0xFFE0703A.toInt() }
+    private val onAccent by lazy { if (dark) 0xFF1A0A02.toInt() else Color.WHITE }
+    private val ok by lazy { if (dark) 0xFF2BBF6A.toInt() else Color.rgb(30, 140, 70) }
+    private val bad by lazy { if (dark) 0xFFFF6B5E.toInt() else Color.rgb(200, 60, 40) }
 
     private val tick = Handler(Looper.getMainLooper())
     private lateinit var listenerState: TextView
@@ -46,7 +53,11 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = Color.WHITE
+        window.statusBarColor = page
+        window.navigationBarColor = page
+        @Suppress("DEPRECATION")
+        if (!dark) window.decorView.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         val c = this
         val pad = Ui.dp(c, 20)
 
@@ -64,7 +75,7 @@ class MainActivity : Activity() {
 
         radioState = Ui.text(c, "", 17f, ink)
         head.add(radioState, top = Ui.dp(c, 22))
-        head.add(Ui.button(c, "Mandar una prueba al radio", 17f, blue, Color.WHITE) { test() }, top = Ui.dp(c, 12))
+        head.add(Ui.button(c, "Mandar una prueba al radio", 17f, accent, onAccent) { test() }, top = Ui.dp(c, 12))
 
         val pause = Switch(c).apply {
             text = "Pausar todo (no mandar nada al radio)"
@@ -80,6 +91,8 @@ class MainActivity : Activity() {
             hint = "Buscar una app"
             textSize = 17f
             isSingleLine = true
+            setTextColor(ink)
+            setHintTextColor(soft)
         }
         head.add(search, top = Ui.dp(c, 6))
 
@@ -88,7 +101,14 @@ class MainActivity : Activity() {
             addHeaderView(head, null, false)
             this.adapter = this@MainActivity.adapter
             divider = null
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(page)
+            // Newer Android draws the app under the status bar: keep the words clear of it.
+            clipToPadding = false
+            setOnApplyWindowInsetsListener { v, insets ->
+                @Suppress("DEPRECATION")
+                v.setPadding(0, insets.systemWindowInsetTop, 0, insets.systemWindowInsetBottom)
+                insets
+            }
         }
         setContentView(list)
         search.addTextChangedListener(object : android.text.TextWatcher {
@@ -109,7 +129,7 @@ class MainActivity : Activity() {
         val state = Ui.text(c, "", 15f, soft)
         col.add(state, top = Ui.dp(c, 2))
         row.add(col, w = 0, weight = 1f, end = Ui.dp(c, 12))
-        val b = Ui.button(c, action, 15f, blue, Color.WHITE, onClick)
+        val b = Ui.button(c, action, 15f, accent, onAccent, onClick)
         row.add(b, w = LinearLayout.LayoutParams.WRAP_CONTENT)
         state.tag = b
         parent.add(row, top = Ui.dp(c, 18))

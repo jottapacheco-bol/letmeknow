@@ -23,7 +23,7 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:label="LetMeKnow"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:theme="@style/Lmk">
 
         <activity
             android:name=".telefono.MainActivity"
