@@ -1,5 +1,9 @@
 # LetMeKnow del radio
 
+## 1.0.3
+
+- «Decir cuántos mensajes sin leer» solo lo dice con dos o más; con uno, solo anuncia.
+
 ## 1.0.2
 
 - Lo que suena hace fila: un mensaje que se lee solo espera a que termine el audio o la lectura de antes.
