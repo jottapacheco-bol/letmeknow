@@ -89,12 +89,21 @@ object Settings {
         }.filter { it.id.isNotEmpty() }
         forever = list
         foreverIds = list.map { it.id }.toSet()
-        voices = try {
-            val o = org.json.JSONObject(prefs(c).getString("voices", "{}"))
-            o.keys().asSequence().associateWith { o.optBoolean(it) }
-        } catch (e: Exception) {
-            emptyMap()
-        }
+        voices = flags(c, "voices")
+        reads = flags(c, "reads")
+    }
+
+    private fun flags(c: Context, name: String): Map<String, Boolean> = try {
+        val o = org.json.JSONObject(prefs(c).getString(name, "{}"))
+        o.keys().asSequence().associateWith { o.optBoolean(it) }
+    } catch (e: Exception) {
+        emptyMap()
+    }
+
+    private fun saveFlags(c: Context, name: String, map: Map<String, Boolean>) {
+        val o = org.json.JSONObject()
+        map.forEach { (k, v) -> o.put(k, v) }
+        prefs(c).edit().putString(name, o.toString()).apply()
     }
 
     private fun saveForever(c: Context, list: List<Forever>) {
@@ -121,9 +130,17 @@ object Settings {
 
     fun setFemale(c: Context, n: org.bolcr.letmeknow.shared.Notice, female: Boolean) {
         voices = voices + (conversation(n) to female)
-        val o = org.json.JSONObject()
-        voices.forEach { (k, v) -> o.put(k, v) }
-        prefs(c).edit().putString("voices", o.toString()).apply()
+        saveFlags(c, "voices", voices)
+    }
+
+    /** Whether each conversation is read aloud by itself when it arrives; the others follow [autoRead]. */
+    @Volatile private var reads: Map<String, Boolean> = emptyMap()
+
+    fun autoRead(c: Context, n: org.bolcr.letmeknow.shared.Notice): Boolean = reads[conversation(n)] ?: autoRead(c)
+
+    fun setAutoRead(c: Context, n: org.bolcr.letmeknow.shared.Notice, on: Boolean) {
+        reads = reads + (conversation(n) to on)
+        saveFlags(c, "reads", reads)
     }
 
     /** The voice for conversations without their own: a man's (Charon, as Levite) unless chosen otherwise. */
