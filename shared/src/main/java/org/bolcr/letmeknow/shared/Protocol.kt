@@ -12,7 +12,9 @@ import java.io.ByteArrayOutputStream
  * connection that the radio opens to the phone.
  *
  * Phone to radio: `hello`, `all` (every notification shown now, after hello), `post` (a new or changed one),
- * `remove` (it was read or dismissed on the phone), `pong`.
+ * `remove` (it was read or dismissed on the phone), `pong`. Version 2 adds to a notification the picture, video
+ * frame or audio that came in it (`media`, `video`, `length`, `audio`, `audioType`) and whether it came from the
+ * work profile (`work`); an older radio ignores them.
  * Radio to phone: `hello`, `open` (do what touching the notification on the phone does), `reply` (answer the chat
  * with a text, dictated or quick), `ping`.
  */
@@ -22,7 +24,7 @@ object Protocol {
     /** How the phone is announced on the network (NSD / mDNS). */
     const val SERVICE_TYPE = "_letmeknow._tcp."
     const val SERVICE_NAME = "LetMeKnow"
-    const val VERSION = 1
+    const val VERSION = 2
 
     /** The radio pings this often, and gives up on a connection that said nothing for [SILENT_MS]. */
     const val PING_MS = 10_000L
@@ -61,6 +63,16 @@ data class Notice(
     val icon: Bitmap?,
     /** The contact's photo, when the app gives one. */
     val photo: Bitmap?,
+    /** A picture that came in the message, or the first frame of a video (version 2). */
+    val media: Bitmap? = null,
+    /** [media] is a video; [length] is how long it lasts, like "0:24", when known. */
+    val video: Boolean = false,
+    val length: String = "",
+    /** A voice or audio message that came inside the notification, to play on the radio. */
+    val audio: ByteArray? = null,
+    val audioType: String = "",
+    /** It came from the phone's work profile (version 2). */
+    val work: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("key", key)
@@ -75,6 +87,11 @@ data class Notice(
         .apply {
             icon?.let { put("icon", Images.encode(it)) }
             photo?.let { put("photo", Images.encode(it)) }
+            media?.let { put("media", Images.encode(it, photo = true)) }
+            if (video) put("video", true)
+            if (work) put("work", true)
+            if (length.isNotEmpty()) put("length", length)
+            audio?.let { put("audio", Base64.encodeToString(it, Base64.NO_WRAP)).put("audioType", audioType) }
         }
 
     companion object {
@@ -95,15 +112,24 @@ data class Notice(
                 canReply = o.optBoolean("reply"),
                 icon = Images.decode(o.optString("icon")),
                 photo = Images.decode(o.optString("photo")),
+                media = Images.decode(o.optString("media")),
+                video = o.optBoolean("video"),
+                length = o.optString("length"),
+                audio = o.optString("audio").takeIf { it.isNotEmpty() }?.let {
+                    try { Base64.decode(it, Base64.DEFAULT) } catch (e: IllegalArgumentException) { null }
+                },
+                audioType = o.optString("audioType"),
+                work = o.optBoolean("work"),
             )
         }
     }
 }
 
 object Images {
-    fun encode(b: Bitmap): String {
+    /** Icons go as PNG (sharp edges); [photo]s as JPEG, much smaller over the Wi-Fi. */
+    fun encode(b: Bitmap, photo: Boolean = false): String {
         val out = ByteArrayOutputStream()
-        b.compress(Bitmap.CompressFormat.PNG, 100, out)
+        if (photo) b.compress(Bitmap.CompressFormat.JPEG, 82, out) else b.compress(Bitmap.CompressFormat.PNG, 100, out)
         return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     }
 

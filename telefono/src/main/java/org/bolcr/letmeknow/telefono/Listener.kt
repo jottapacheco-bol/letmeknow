@@ -44,7 +44,7 @@ class Listener : NotificationListenerService() {
         // No radio: nothing is prepared. When it connects it gets everything shown at that moment.
         if (Server.radio == null) return
         val notice = toNotice(sbn) ?: return
-        val sig = notice.title + "\u0000" + notice.text + "\u0000" + notice.lines.size
+        val sig = signature(notice)
         if (sent[sbn.key] == sig) return
         sent[sbn.key] = sig
         Server.send(Protocol.message(Protocol.POST) { put("n", notice.toJson()) })
@@ -57,8 +57,11 @@ class Listener : NotificationListenerService() {
     /** Every notification of the chosen apps shown now on the phone, for a radio that just connected. */
     private fun current(): List<Notice> {
         val all = try { activeNotifications?.toList().orEmpty() } catch (e: Exception) { emptyList() }
-        return all.mapNotNull { sbn -> toNotice(sbn)?.also { sent[sbn.key] = it.title + "\u0000" + it.text + "\u0000" + it.lines.size } }
+        return all.mapNotNull { sbn -> toNotice(sbn)?.also { sent[sbn.key] = signature(it) } }
     }
+
+    private fun signature(n: Notice) =
+        n.title + "\u0000" + n.text + "\u0000" + n.lines.size + "\u0000" + (n.media != null) + (n.audio?.size ?: 0)
 
     private fun command(msg: JSONObject) {
         when (msg.optString("t")) {
@@ -74,6 +77,11 @@ class Listener : NotificationListenerService() {
         if (intent == null) {
             // Already read on the phone, or a test: open the app itself.
             val pkg = sbn?.packageName ?: return
+            if (sbn.user != android.os.Process.myUserHandle()) {
+                val apps = getSystemService(android.content.pm.LauncherApps::class.java)
+                apps.getActivityList(pkg, sbn.user).firstOrNull()?.let { apps.startMainActivity(it.componentName, sbn.user, null, null) }
+                return
+            }
             packageManager.getLaunchIntentForPackage(pkg)?.let {
                 it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(it)
@@ -124,59 +132,175 @@ class Listener : NotificationListenerService() {
 
     private fun toNotice(sbn: StatusBarNotification): Notice? {
         val pkg = sbn.packageName
-        if (pkg == packageName || !Choices.isOn(this, pkg)) return null
+        // The work profile's notifications come here too (unless its administrator forbids it).
+        val work = sbn.user != android.os.Process.myUserHandle()
+        if (pkg == packageName || !Choices.isOn(this, Choices.id(pkg, work))) return null
         val n = sbn.notification
         // WhatsApp also posts a summary of all its chats; ongoing ones are music, navigation, calls in progress.
         if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return null
         if (sbn.isOngoing) return null
         val ex = n.extras
-        val lines = messages(ex)
+        val all = rawMessages(ex)
+        val lines = all.takeLast(6)
+            .map { Line(it.senderPerson?.name?.toString().orEmpty(), it.text?.toString().orEmpty()) }
+            .filter { it.text.isNotBlank() }
         val title = (ex.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)
             ?: ex.getCharSequence(Notification.EXTRA_TITLE))?.toString()?.trim().orEmpty()
         val text = (ex.getCharSequence(Notification.EXTRA_BIG_TEXT)
             ?: ex.getCharSequence(Notification.EXTRA_TEXT))?.toString()?.trim().orEmpty()
         if (title.isEmpty() && text.isEmpty() && lines.isEmpty()) return null
         val last = lines.lastOrNull()?.text ?: text
+        val m = media(n, all.lastOrNull())
         return Notice(
             key = sbn.key,
             pkg = pkg,
-            app = label(pkg),
+            app = label(pkg, sbn.user),
             title = title,
             text = text,
             lines = lines,
             time = sbn.postTime,
             voice = VOICE.containsMatchIn(last),
             canReply = replyAction(n) != null,
-            icon = icon(pkg),
+            icon = icon(pkg, sbn.user),
             photo = photo(n),
+            media = m.picture,
+            video = m.video,
+            length = m.length,
+            audio = m.audio,
+            audioType = m.audioType,
+            work = work,
         )
     }
 
-    /** The last messages of a chat, when the app uses Android's messaging style (WhatsApp, Messages, Telegram). */
-    private fun messages(ex: Bundle): List<Line> {
+    /** The messages of a chat, when the app uses Android's messaging style (WhatsApp, Messages, Telegram). */
+    private fun rawMessages(ex: Bundle): List<Notification.MessagingStyle.Message> {
         if (Build.VERSION.SDK_INT < 28) return emptyList()
         @Suppress("DEPRECATION")
         val arr = ex.getParcelableArray(Notification.EXTRA_MESSAGES) ?: return emptyList()
         return try {
             Notification.MessagingStyle.Message.getMessagesFromBundleArray(arr)
-                .takeLast(6)
-                .map { Line(it.senderPerson?.name?.toString().orEmpty(), it.text?.toString().orEmpty()) }
-                .filter { it.text.isNotBlank() }
         } catch (e: Exception) {
             emptyList()
         }
     }
 
-    private fun label(pkg: String): String = labels.getOrPut(pkg) {
+    private class Media(
+        val picture: Bitmap? = null, val video: Boolean = false, val length: String = "",
+        val audio: ByteArray? = null, val audioType: String = "",
+    )
+
+    /** Remembered by address, so each new message of the chat doesn't read the same picture again. */
+    private val mediaCache = object : LinkedHashMap<String, Media>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Media>?) = size > 6
+    }
+
+    /**
+     * What came in the message besides words: the last message's picture, video or audio (the app gives the
+     * address and Android lets this service read it), or a big picture of the notification. Nothing, if the app
+     * doesn't share it (WhatsApp usually keeps voice messages to itself).
+     */
+    private fun media(n: Notification, last: Notification.MessagingStyle.Message?): Media {
+        val uri = last?.dataUri
+        val type = last?.dataMimeType.orEmpty()
+        if (uri != null && type.isNotEmpty()) {
+            val known = synchronized(mediaCache) { mediaCache[uri.toString()] }
+            if (known != null) return known
+            val got = try {
+                when {
+                    type.startsWith("image/") -> Media(picture = picture(uri))
+                    type.startsWith("video/") -> Media(picture = frame(uri), video = true, length = length(uri))
+                    type.startsWith("audio/") -> Media(audio = sound(uri), audioType = type)
+                    else -> null
+                }
+            } catch (e: Exception) {
+                Log.w("LetMeKnow", "Could not read what came in the message", e)
+                null
+            }
+            if (got != null && (got.picture != null || got.audio != null)) {
+                synchronized(mediaCache) { mediaCache[uri.toString()] = got }
+                return got
+            }
+        }
+        return Media(picture = bigPicture(n))
+    }
+
+    @Suppress("DEPRECATION")
+    private fun bigPicture(n: Notification): Bitmap? = try {
+        val ex = n.extras
+        val b = ex.getParcelable<Bitmap>(Notification.EXTRA_PICTURE)
+            ?: if (Build.VERSION.SDK_INT >= 31) ex.getParcelable<android.graphics.drawable.Icon>(Notification.EXTRA_PICTURE_ICON)
+                ?.loadDrawable(this)?.let { Ui.bitmap(it, MEDIA) } else null
+        b?.let { fit(it) }
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun picture(uri: android.net.Uri): Bitmap? {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= MEDIA) sample *= 2
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        return contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, opts) }?.let { fit(it) }
+    }
+
+    private fun frame(uri: android.net.Uri): Bitmap? = try {
+        contentResolver.loadThumbnail(uri, android.util.Size(MEDIA, MEDIA), null)
+    } catch (e: Exception) {
+        val r = android.media.MediaMetadataRetriever()
+        try { r.setDataSource(this, uri); r.frameAtTime?.let { fit(it) } } finally { r.release() }
+    }
+
+    private fun length(uri: android.net.Uri): String {
+        val r = android.media.MediaMetadataRetriever()
+        return try {
+            r.setDataSource(this, uri)
+            val s = (r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: return "") / 1000
+            "%d:%02d".format(s / 60, s % 60)
+        } catch (e: Exception) {
+            ""
+        } finally {
+            r.release()
+        }
+    }
+
+    /** The audio itself, if it is not too big to send over the Wi-Fi in one go. */
+    private fun sound(uri: android.net.Uri): ByteArray? = contentResolver.openInputStream(uri)?.use { input ->
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(16 * 1024)
+        while (true) {
+            val r = input.read(buf)
+            if (r < 0) break
+            out.write(buf, 0, r)
+            if (out.size() > MAX_AUDIO) return null
+        }
+        out.toByteArray()
+    }
+
+    private fun fit(b: Bitmap): Bitmap {
+        val big = maxOf(b.width, b.height)
+        if (big <= MEDIA) return b
+        val k = MEDIA.toFloat() / big
+        return Bitmap.createScaledBitmap(b, (b.width * k).toInt().coerceAtLeast(1), (b.height * k).toInt().coerceAtLeast(1), true)
+    }
+
+    /** The app as installed in that profile: in the work profile its icon carries the briefcase. */
+    private fun info(pkg: String, user: android.os.UserHandle): android.content.pm.ApplicationInfo =
+        if (user == android.os.Process.myUserHandle()) packageManager.getApplicationInfo(pkg, 0)
+        else getSystemService(android.content.pm.LauncherApps::class.java).getApplicationInfo(pkg, 0, user)
+
+    private fun label(pkg: String, user: android.os.UserHandle): String = labels.getOrPut("$pkg/$user") {
         try {
-            packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+            packageManager.getApplicationLabel(info(pkg, user)).toString()
         } catch (e: Exception) {
             pkg
         }
     }
 
-    private fun icon(pkg: String): Bitmap? = icons[pkg] ?: try {
-        Ui.bitmap(packageManager.getApplicationIcon(pkg), 144).also { icons[pkg] = it }
+    private fun icon(pkg: String, user: android.os.UserHandle): Bitmap? = icons["$pkg/$user"] ?: try {
+        val plain = info(pkg, user).loadIcon(packageManager)
+        val d = if (user == android.os.Process.myUserHandle()) plain else packageManager.getUserBadgedIcon(plain, user)
+        Ui.bitmap(d, 144).also { icons["$pkg/$user"] = it }
     } catch (e: Exception) {
         null
     }
@@ -192,6 +316,9 @@ class Listener : NotificationListenerService() {
             private set
 
         /** How WhatsApp (and others) say "voice message" in a notification, in Spanish and English. */
+        /** Pictures go at most this big (pixels on the long side): sharp on the radio, small over the Wi-Fi. */
+        const val MEDIA = 720
+        const val MAX_AUDIO = 3 * 1024 * 1024
         val VOICE = Regex("🎤|mensaje de voz|nota de voz|voice message|audio \\(", RegexOption.IGNORE_CASE)
     }
 }

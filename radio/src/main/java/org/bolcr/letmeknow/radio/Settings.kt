@@ -60,7 +60,7 @@ object Settings {
     /** One conversation silenced (holding its bubble), until a time. Kept until the car is turned off. */
     private val quiet = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
-    private fun conversation(n: org.bolcr.letmeknow.shared.Notice) = n.pkg + "|" + n.title.ifBlank { n.key }
+    private fun conversation(n: org.bolcr.letmeknow.shared.Notice) = n.pkg + (if (n.work) "@work" else "") + "|" + n.title.ifBlank { n.key }
 
     fun muted(n: org.bolcr.letmeknow.shared.Notice): Boolean =
         muted() || (quiet[conversation(n)] ?: 0L) > System.currentTimeMillis()

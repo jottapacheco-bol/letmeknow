@@ -51,6 +51,8 @@ class Look(context: Context) {
         val ON_GREEN = Color.rgb(4, 33, 15)
         val RED = Color.rgb(240, 89, 74)
         val PURPLE = Color.rgb(180, 140, 255)
+        /** The phone's work profile. */
+        val WORK = Color.rgb(142, 107, 232)
 
         /** A steady color for a contact without photo, from its name. */
         fun avatarColor(name: String): Int {

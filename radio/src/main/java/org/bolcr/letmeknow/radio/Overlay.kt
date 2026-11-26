@@ -171,7 +171,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             isSingleLine = true
             ellipsize = TextUtils.TruncateAt.END
         })
-        words.addView(text("${n.app} · ${ago(n.time)}", 16f, look.soft))
+        words.addView(text("${appLine(n)} · ${ago(n.time)}", 16f, look.soft))
         row.addView(words, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             marginStart = look.px(14)
             marginEnd = look.px(14)
@@ -429,7 +429,9 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         val root = object : FrameLayout(context) {
             override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
                 if (event.keyCode == android.view.KeyEvent.KEYCODE_BACK) {
-                    if (event.action == android.view.KeyEvent.ACTION_UP && panel === this) closePanel()
+                    if (event.action == android.view.KeyEvent.ACTION_UP && panel === this) {
+                        if (big != null) closeBig() else closePanel()
+                    }
                     return true
                 }
                 return super.dispatchKeyEvent(event)
@@ -484,6 +486,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
 
     fun closePanel(animated: Boolean = true) {
         val root = panel ?: return
+        stopAudio()
+        big = null
         dictation?.stop()
         dictation = null
         pulse?.cancel()
@@ -527,6 +531,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         mode = Mode.READ
         openKey = key
         dictation?.stop()
+        stopAudio()
         fill(c, whole = true)
         val whole = row(Gravity.TOP)
         c.addView(whole, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -578,7 +583,9 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         val body = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         val lines = n.lines
         val scale = Settings.textScale(context)
-        if (n.voice) {
+        if (n.audio != null) {
+            body.addView(audioRow(n))
+        } else if (n.voice) {
             body.addView(voiceRow(n))
         } else {
             lines.dropLast(1).takeLast(2).forEach { l ->
@@ -592,9 +599,20 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                 words.length > 220 -> 0.85f
                 else -> 1f
             }
-            body.addView(text(words, (42f * scale * fit).coerceAtLeast(30f), look.ink, bold = true).apply {
+            val shown = text(words, (42f * scale * fit).coerceAtLeast(30f), look.ink, bold = true).apply {
                 setLineSpacing(0f, 1.12f)
-            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(4) })
+            }
+            val media = n.media
+            if (media != null) {
+                // A picture or a video: its thumbnail beside the words; touching it shows it big.
+                val side = minOf(look.px(300), (room * 0.48f).toInt())
+                val withPicture = row(Gravity.TOP)
+                withPicture.addView(thumb(n, media, side), LinearLayout.LayoutParams(side, side))
+                withPicture.addView(shown, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(20) })
+                body.addView(withPicture, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(4) })
+            } else {
+                body.addView(shown, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(4) })
+            }
         }
         // What doesn't fit scrolls with the finger; a small arrow that bobs says there is more.
         val scroll = ScrollView(context).apply { addView(body); isVerticalScrollBarEnabled = false }
@@ -672,6 +690,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         body.animate().alpha(1f).translationY(0f).setStartDelay(if (fade) 0 else 300).setDuration(380).start()
     }
 
+    private fun appLine(n: Notice) = if (n.work) "${n.app} · Trabajo" else n.app
+
     /** "Ana: ..." in a group; just the text in a chat with one person. */
     private fun said(n: Notice, sender: String, text: String): String =
         if (sender.isNotBlank() && sender != n.title) "$sender: $text" else text
@@ -685,7 +705,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         h.addView(avatar(n, 68), LinearLayout.LayoutParams(look.px(68), look.px(68)))
         val names = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
         names.addView(text(n.title.ifBlank { n.app }, 30f, look.ink, bold = true).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END; includeFontPadding = false })
-        names.addView(text("${n.app} · ${ago(n.time)}", 17f, look.soft).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END },
+        names.addView(text("${appLine(n)} · ${ago(n.time)}", 17f, look.soft).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END },
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(4) })
         h.addView(names, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(16); marginEnd = look.px(10) })
         fun gap() = h.addView(View(context).apply { setBackgroundColor(look.edge) },
@@ -722,6 +742,199 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         }
         smallAt(small(R.drawable.ic_close, "Cerrar") { closePanel() })
         return h
+    }
+
+    /** The picture shown big over the whole window, if it is. */
+    private var big: View? = null
+
+    /** The thumbnail: the picture cut square, a play sign and the length on a video, and the corner arrows. */
+    private fun thumb(n: Notice, media: android.graphics.Bitmap, side: Int): View {
+        val f = FrameLayout(context).apply {
+            background = look.round(look.chip, 22)
+            outlineProvider = ViewOutlineProvider.BACKGROUND
+            clipToOutline = true
+            contentDescription = if (n.video) "Ver el video en grande" else "Ver la foto en grande"
+            setOnClickListener { showBig(n, media) }
+        }
+        f.addView(ImageView(context).apply { setImageBitmap(media); scaleType = ImageView.ScaleType.CENTER_CROP },
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val shade = android.graphics.Color.argb(140, 0, 0, 0)
+        if (n.video) {
+            val play = (side * 0.27f).toInt()
+            f.addView(icon(R.drawable.ic_play, android.graphics.Color.WHITE, 34, null).apply {
+                background = look.oval(shade)
+                val p = (play * 0.28f).toInt()
+                setPadding(p, p, p, p)
+            }, FrameLayout.LayoutParams(play, play, Gravity.CENTER))
+            if (n.length.isNotEmpty()) {
+                f.addView(text(n.length, 16f, android.graphics.Color.WHITE, bold = true).apply {
+                    background = look.round(shade, 10)
+                    setPadding(look.px(10), look.px(4), look.px(10), look.px(4))
+                }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END or Gravity.BOTTOM).apply {
+                    marginEnd = look.px(12); bottomMargin = look.px(12)
+                })
+            }
+        }
+        f.addView(icon(R.drawable.ic_expand, android.graphics.Color.WHITE, 22, null).apply {
+            background = look.oval(shade)
+            setPadding(look.px(9), look.px(9), look.px(9), look.px(9))
+        }, FrameLayout.LayoutParams(look.px(40), look.px(40), Gravity.START or Gravity.TOP).apply {
+            marginStart = look.px(12); topMargin = look.px(12)
+        })
+        f.scaleX = 0.4f; f.scaleY = 0.4f; f.alpha = 0f
+        f.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(450).setInterpolator(OvershootInterpolator(1.2f)).start()
+        return f
+    }
+
+    /** The picture as big as the window lets; touching anywhere (or the radio's back button) goes back. */
+    private fun showBig(n: Notice, media: android.graphics.Bitmap) {
+        val root = panel as? FrameLayout ?: return
+        closeBig()
+        speaker.stop()
+        val cover = FrameLayout(context).apply {
+            setBackgroundColor(android.graphics.Color.argb(210, 0, 0, 0))
+            isClickable = true
+            setOnClickListener { closeBig() }
+            alpha = 0f
+            animate().alpha(1f).setDuration(200).start()
+        }
+        val dm = context.resources.displayMetrics
+        val room = minOf(dm.widthPixels, dm.heightPixels) - look.px(80)
+        val k = minOf(room.toFloat() / media.width, room.toFloat() / media.height, 3f)
+        val pic = ImageView(context).apply {
+            setImageBitmap(media)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            background = look.round(android.graphics.Color.BLACK, 26)
+            outlineProvider = ViewOutlineProvider.BACKGROUND
+            clipToOutline = true
+            scaleX = 0.4f; scaleY = 0.4f
+            animate().scaleX(1f).scaleY(1f).setDuration(450).setInterpolator(OvershootInterpolator(1.1f)).start()
+        }
+        cover.addView(pic, FrameLayout.LayoutParams((media.width * k).toInt(), (media.height * k).toInt(), Gravity.CENTER))
+        if (n.video) {
+            // The radio only has the first frame: the video itself plays on the phone.
+            cover.addView(row(Gravity.CENTER).apply {
+                background = look.round(Look.ORANGE, 36)
+                setPadding(look.px(24), 0, look.px(26), 0)
+                contentDescription = "Ver el video en el teléfono"
+                addView(icon(R.drawable.ic_play_phone, Look.ON_ORANGE, 32, null), LinearLayout.LayoutParams(look.px(32), look.px(32)))
+                addView(text("Teléfono", 20f, Look.ON_ORANGE, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(10) })
+                setOnClickListener {
+                    send(Protocol.message(Protocol.OPEN) { put("key", n.key) })
+                    CarAudio.open(context)
+                    done(n.key, closeAfter = true)
+                }
+            }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(72), Gravity.START or Gravity.BOTTOM).apply {
+                marginStart = look.px(30); bottomMargin = look.px(30)
+            })
+        }
+        cover.addView(icon(R.drawable.ic_close, android.graphics.Color.WHITE, 28, "Volver").apply {
+            background = look.oval(android.graphics.Color.argb(40, 255, 255, 255))
+            setPadding(look.px(18), look.px(18), look.px(18), look.px(18))
+            setOnClickListener { closeBig() }
+        }, FrameLayout.LayoutParams(look.px(64), look.px(64), Gravity.END or Gravity.TOP).apply {
+            marginEnd = look.px(30); topMargin = look.px(30)
+        })
+        root.addView(cover, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        big = cover
+    }
+
+    private fun closeBig() {
+        val v = big ?: return
+        big = null
+        v.animate().alpha(0f).setDuration(180).withEndAction { (v.parent as? ViewGroup)?.removeView(v) }.start()
+    }
+
+    private var player: android.media.MediaPlayer? = null
+    private var progress: ValueAnimator? = null
+
+    private fun stopAudio() {
+        progress?.cancel()
+        progress = null
+        player?.let { runCatching { it.stop() }; it.release() }
+        player = null
+    }
+
+    /**
+     * Audio that came inside the notification: it plays here, through the car's speakers. The button plays and
+     * pauses; the bars move and the line fills while it plays, and the time says how much is left.
+     */
+    private fun audioRow(n: Notice): View {
+        val r = row(Gravity.CENTER_VERTICAL).apply {
+            background = look.round(android.graphics.Color.argb(26, 56, 198, 244), 28)
+            setPadding(look.px(26), look.px(24), look.px(26), look.px(24))
+        }
+        val button = icon(R.drawable.ic_play, Look.ON_BLUE, 40, "Oír el audio").apply {
+            background = look.oval(Look.BLUE)
+            setPadding(look.px(28), look.px(28), look.px(28), look.px(28))
+        }
+        r.addView(button, LinearLayout.LayoutParams(look.px(96), look.px(96)))
+        val mid = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        val wave = Wave(context, Look.BLUE)
+        wave.alpha = 0.45f
+        mid.addView(wave, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, look.px(54)))
+        val track = FrameLayout(context).apply { background = look.round(look.off, 4) }
+        val line = View(context).apply { background = look.round(Look.BLUE, 4); pivotX = 0f; scaleX = 0f }
+        track.addView(line, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        mid.addView(track, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, look.px(8)).apply { topMargin = look.px(12) })
+        r.addView(mid, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(22); marginEnd = look.px(22) })
+        val time = text("", 26f, look.ink, bold = true)
+        r.addView(time)
+
+        fun clock(ms: Long) = (ms / 1000).let { "%d:%02d".format(it / 60, it % 60) }
+        // Ready to play, from a file the player can read.
+        val ext = n.audioType.substringAfter('/').substringBefore(';').ifBlank { "audio" }
+        val file = java.io.File(context.cacheDir, "audio.$ext")
+        val mp = try {
+            file.writeBytes(n.audio ?: return voiceRow(n))
+            android.media.MediaPlayer().apply {
+                setAudioAttributes(android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                setDataSource(file.path)
+                prepare()
+            }
+        } catch (e: Exception) {
+            // The radio can't play this kind of audio: like before, "Oír" opens it on the phone.
+            return voiceRow(n)
+        }
+        player = mp
+        val total = mp.duration.toLong().coerceAtLeast(1)
+        time.text = clock(total)
+        val fill = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = total
+            interpolator = android.view.animation.LinearInterpolator()
+            addUpdateListener {
+                val k = it.animatedValue as Float
+                line.scaleX = k
+                time.text = clock((total * (1 - k)).toLong() + 999)
+            }
+        }
+        progress = fill
+        fun playing(on: Boolean) {
+            button.setImageResource(if (on) R.drawable.ic_pause else R.drawable.ic_play)
+            button.contentDescription = if (on) "Pausa" else "Oír el audio"
+            wave.animate().alpha(if (on) 1f else 0.45f).setDuration(200).start()
+        }
+        mp.setOnCompletionListener {
+            playing(false)
+            fill.cancel()
+            line.scaleX = 0f
+            time.text = clock(total)
+            it.seekTo(0)
+        }
+        button.setOnClickListener {
+            if (player !== mp) return@setOnClickListener
+            if (mp.isPlaying) {
+                mp.pause(); fill.pause(); playing(false)
+            } else {
+                speaker.stop()
+                mp.start()
+                if (fill.isPaused) fill.resume() else fill.start()
+                playing(true)
+            }
+        }
+        return r
     }
 
     /** A voice message: the radio can't play it; "Oír" opens it on the phone, which plays through the car. */
@@ -761,6 +974,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         val n = Inbox.get(key) ?: return
         mode = Mode.REPLY
         speaker.stop()
+        stopAudio()
         fill(c, whole = false)
         val h = row(Gravity.CENTER_VERTICAL)
         h.addView(avatar(n, 56), LinearLayout.LayoutParams(look.px(56), look.px(56)))
@@ -1061,6 +1275,21 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             }
             frame.addView(badge, FrameLayout.LayoutParams(b, b, Gravity.END or Gravity.BOTTOM).apply {
                 marginEnd = -look.px(4); bottomMargin = -look.px(4)
+            })
+        }
+        if (n.work) {
+            // From the phone's work profile: a purple briefcase on top.
+            val b = look.px(sizeDp * 0.4f)
+            val work = ImageView(context).apply {
+                setImageResource(R.drawable.ic_work)
+                setColorFilter(android.graphics.Color.WHITE, android.graphics.PorterDuff.Mode.SRC_IN)
+                background = look.oval(Look.WORK)
+                val p = (b * 0.2f).toInt()
+                setPadding(p, p, p, p)
+                contentDescription = "Trabajo"
+            }
+            frame.addView(work, FrameLayout.LayoutParams(b, b, Gravity.END or Gravity.TOP).apply {
+                marginEnd = -look.px(4); topMargin = -look.px(4)
             })
         }
         return frame

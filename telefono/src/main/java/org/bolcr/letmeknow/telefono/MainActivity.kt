@@ -53,11 +53,14 @@ class MainActivity : Activity() {
     private lateinit var adapter: Apps
 
     private companion object {
+        /** The work profile's colour (the same purple as on the radio). */
+        const val WORK = 0xFF8E6BE8.toInt()
         const val LOCAL_API = 37
         const val LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK"
     }
 
-    private data class App(val pkg: String, val label: String, val icon: Drawable)
+    /** [pkg] is the app's id in [Choices]: with "@work" for the work profile's copy. */
+    private data class App(val pkg: String, val label: String, val icon: Drawable, val work: Boolean = false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -214,23 +217,51 @@ class MainActivity : Activity() {
             canReply = true,
             icon = icon,
             photo = null,
+            media = sample(),
         )
         Server.send(Protocol.message(Protocol.POST) { put("n", n.toJson()) })
         if (Server.radio == null) android.widget.Toast.makeText(this, "El radio todavía no está conectado", android.widget.Toast.LENGTH_LONG).show()
     }
 
+    /** A sunset drawn here, so the test also shows how a picture looks on the radio. */
+    private fun sample(): android.graphics.Bitmap {
+        val b = android.graphics.Bitmap.createBitmap(600, 600, android.graphics.Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(b)
+        val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        p.shader = android.graphics.LinearGradient(0f, 0f, 600f, 600f,
+            intArrayOf(0xFFF2A65A.toInt(), 0xFFC2185B.toInt(), 0xFF5E6AD2.toInt()), null, android.graphics.Shader.TileMode.CLAMP)
+        c.drawRect(0f, 0f, 600f, 600f, p)
+        p.shader = null
+        p.color = 0xD9FFF0C8.toInt()
+        c.drawCircle(440f, 160f, 68f, p)
+        p.color = 0x8C140A1E.toInt()
+        c.drawPath(android.graphics.Path().apply {
+            moveTo(0f, 480f); lineTo(180f, 300f); lineTo(320f, 420f); lineTo(440f, 320f); lineTo(600f, 460f)
+            lineTo(600f, 600f); lineTo(0f, 600f); close()
+        }, p)
+        return b
+    }
+
     private fun loadApps() {
         Thread {
             val pm = packageManager
-            val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-            val apps = pm.queryIntentActivities(launcher, 0)
-                .map { it.activityInfo.applicationInfo }
-                .distinctBy { it.packageName }
-                .filter { it.packageName != packageName }
-                .map { App(it.packageName, pm.getApplicationLabel(it).toString(), it.loadIcon(pm)) }
+            val launcher = getSystemService(android.content.pm.LauncherApps::class.java)
+            val me = android.os.Process.myUserHandle()
+            // The personal profile and, if the phone has one, the work profile: the same app can be chosen in each.
+            val apps = launcher.profiles.flatMap { user ->
+                val work = user != me
+                launcher.getActivityList(null, user)
+                    .map { it.applicationInfo }
+                    .distinctBy { it.packageName }
+                    .filter { it.packageName != packageName }
+                    .map {
+                        val icon = it.loadIcon(pm).let { d -> if (work) pm.getUserBadgedIcon(d, user) else d }
+                        App(Choices.id(it.packageName, work), pm.getApplicationLabel(it).toString(), icon, work)
+                    }
+            }
             val on = Choices.apps(this)
             // The chosen ones first, then by name.
-            val sorted = apps.sortedWith(compareBy<App>({ it.pkg !in on }, { it.label.lowercase() }))
+            val sorted = apps.sortedWith(compareBy<App>({ it.pkg !in on }, { it.work }, { it.label.lowercase() }))
             runOnUiThread { adapter.set(sorted) }
         }.start()
     }
@@ -263,12 +294,18 @@ class MainActivity : Activity() {
                 val size = Ui.dp(c, 40)
                 add(ImageView(c), w = size, h = size, end = Ui.dp(c, 14))
                 add(Ui.text(c, "", 17f, ink), w = 0, weight = 1f)
+                // The work profile's apps say so, in purple, like their bubbles on the radio.
+                add(Ui.text(c, "Trabajo", 13f, 0xFFFFFFFF.toInt(), bold = true).apply {
+                    background = Ui.rounded(WORK, Ui.dp(c, 10).toFloat())
+                    setPadding(Ui.dp(c, 10), Ui.dp(c, 3), Ui.dp(c, 10), Ui.dp(c, 3))
+                }, w = LinearLayout.LayoutParams.WRAP_CONTENT, end = Ui.dp(c, 10))
                 add(CheckBox(c).apply { isClickable = false }, w = LinearLayout.LayoutParams.WRAP_CONTENT)
             }
             val app = shown[position]
-            val box = row.getChildAt(2) as CheckBox
+            val box = row.getChildAt(3) as CheckBox
             (row.getChildAt(0) as ImageView).setImageDrawable(app.icon)
             (row.getChildAt(1) as TextView).text = app.label
+            row.getChildAt(2).visibility = if (app.work) View.VISIBLE else View.GONE
             box.isChecked = app.pkg in Choices.apps(c)
             row.setOnClickListener {
                 val now = !box.isChecked
