@@ -22,6 +22,7 @@ class RadioService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Emoji.start(this)
         startForeground(1, notice())
         overlay = Overlay(this) { link.send(it) }
         link = Link(this, ::message) { host ->
@@ -110,4 +111,20 @@ class Starter : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         RadioService.start(context)
     }
+}
+
+/** Today's emojis, carried in the app (the radio's Android 10 shows a box for the new ones). */
+object Emoji {
+    fun start(c: Context) {
+        runCatching {
+            androidx.emoji2.text.EmojiCompat.init(
+                androidx.emoji2.bundled.BundledEmojiCompatConfig(c.applicationContext).setReplaceAll(true))
+        }
+    }
+
+    /** [s] with its emojis drawn by the app, once they are loaded (before that, as it came). */
+    fun of(s: CharSequence): CharSequence = runCatching {
+        val e = androidx.emoji2.text.EmojiCompat.get()
+        if (e.loadState == androidx.emoji2.text.EmojiCompat.LOAD_STATE_SUCCEEDED) e.process(s) ?: s else s
+    }.getOrDefault(s)
 }

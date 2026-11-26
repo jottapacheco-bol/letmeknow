@@ -71,3 +71,8 @@ kotlin {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
+
+dependencies {
+    // Today's emojis inside the app: Android 10 does not know the new ones and shows a box instead.
+    implementation("androidx.emoji2:emoji2-bundled:1.4.0")
+}

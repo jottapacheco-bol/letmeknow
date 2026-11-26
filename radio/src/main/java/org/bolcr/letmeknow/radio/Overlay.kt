@@ -922,7 +922,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     )
 
     private fun text(s: String, sp: Float, color: Int, bold: Boolean = false) = TextView(context).apply {
-        text = s
+        text = Emoji.of(s)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, look.sp(sp))
         setTextColor(color)
         typeface = if (bold) Typeface.create("sans-serif-medium", Typeface.BOLD) else Typeface.create("sans-serif", Typeface.NORMAL)
