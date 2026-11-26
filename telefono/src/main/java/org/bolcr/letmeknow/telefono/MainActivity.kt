@@ -211,7 +211,7 @@ class MainActivity : Activity() {
             lines = emptyList(),
             time = System.currentTimeMillis(),
             voice = false,
-            canReply = false,
+            canReply = true,
             icon = icon,
             photo = null,
         )

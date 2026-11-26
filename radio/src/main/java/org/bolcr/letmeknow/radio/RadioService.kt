@@ -84,7 +84,7 @@ class RadioService : Service() {
         lines = emptyList(),
         time = System.currentTimeMillis(),
         voice = false,
-        canReply = false,
+        canReply = true,
         icon = null,
         photo = null,
     )

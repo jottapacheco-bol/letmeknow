@@ -934,15 +934,16 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         return frame
     }
 
+    /** While it reads, the speaker button shows bars that move like a voice, inside the button (nothing grows). */
     private fun beat(v: View, on: Boolean) {
         pulse?.cancel()
-        v.scaleX = 1f; v.scaleY = 1f
+        val btn = v as? FrameLayout ?: return
+        val icon = btn.getChildAt(0)
+        (btn.findViewWithTag<View>("bars"))?.let { btn.removeView(it) }
+        icon.alpha = if (on) 0f else 1f
         if (!on) return
-        pulse = ObjectAnimator.ofPropertyValuesHolder(v,
-            PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.1f, 1f),
-            PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.1f, 1f)).apply {
-            duration = 900; repeatCount = ValueAnimator.INFINITE; start()
-        }
+        val bars = SpeakBars(context, Look.ON_ORANGE).apply { tag = "bars" }
+        btn.addView(bars, FrameLayout.LayoutParams(look.px(64), look.px(52), Gravity.CENTER))
     }
 
     private fun ago(time: Long): String {
@@ -981,6 +982,35 @@ class Ripples(context: Context, private val color: Int) : View(context) {
             paint.color = color
             paint.alpha = ((1f - p) * 180).toInt()
             canvas.drawCircle(width / 2f, height / 2f, base + (max - base) * p, paint)
+        }
+    }
+}
+
+/** Five bars that rise and fall like someone talking, for the speaker button while it reads. */
+class SpeakBars(context: Context, color: Int) : View(context) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color }
+    private val speed = floatArrayOf(1.0f, 1.7f, 1.3f, 2.1f, 1.5f)
+    private val phase = floatArrayOf(0f, 1.1f, 2.3f, 0.6f, 1.8f)
+    private var t = 0f
+    private val anim = ValueAnimator.ofFloat(0f, (Math.PI * 20).toFloat()).apply {
+        duration = 9000; repeatCount = ValueAnimator.INFINITE
+        interpolator = android.view.animation.LinearInterpolator()
+        addUpdateListener { t = it.animatedValue as Float; invalidate() }
+    }
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); anim.start() }
+    override fun onDetachedFromWindow() { super.onDetachedFromWindow(); anim.cancel() }
+
+    override fun onDraw(canvas: Canvas) {
+        val n = speed.size
+        val bar = width / (n * 1.8f)
+        val gap = (width - bar * n) / (n - 1)
+        for (i in 0 until n) {
+            // Two waves together, so it never looks like a regular pulse.
+            val k = 0.25f + 0.75f * ((kotlin.math.sin(t * speed[i] + phase[i]) * 0.6f + kotlin.math.sin(t * 2.7f + i) * 0.4f) * 0.5f + 0.5f)
+            val h = height * k
+            val x = i * (bar + gap)
+            canvas.drawRoundRect(x, (height - h) / 2, x + bar, (height + h) / 2, bar / 2, bar / 2, paint)
         }
     }
 }
