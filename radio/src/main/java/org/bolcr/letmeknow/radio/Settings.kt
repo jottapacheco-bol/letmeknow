@@ -45,6 +45,11 @@ object Settings {
     fun bubblesLeft(c: Context): Boolean = prefs(c).getBoolean("bubblesLeft", false)
     fun setBubblesLeft(c: Context, v: Boolean) = prefs(c).edit().putBoolean("bubblesLeft", v).apply()
 
+    /** Where the message window was left (moved with the finger), its top-left corner. -1: as drawn. */
+    fun panelX(c: Context): Int = prefs(c).getInt("panelX", -1)
+    fun panelY(c: Context): Int = prefs(c).getInt("panelY", -1)
+    fun setPanelPlace(c: Context, x: Int, y: Int) = prefs(c).edit().putInt("panelX", x).putInt("panelY", y).apply()
+
     /** Silenced until this time; [UNTIL_OFF] = until the car is turned off (the radio's app starts again). */
     @Volatile var mutedUntil: Long = 0L
     const val UNTIL_OFF = Long.MAX_VALUE

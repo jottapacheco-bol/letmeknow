@@ -179,13 +179,18 @@ class Dictation(context: Context, private val onWords: (String, Boolean) -> Unit
  * it only from the apps listed on it by package and SHA-1, so org.bolcr.letmeknow.radio has to be listed there too.
  */
 class CloudVoice(private val context: Context) {
+    companion object {
+        /** Why Google's voice was not used the last time (shown on the radio's screen), or null when it worked. */
+        @Volatile var problem: String? = null
+    }
+
     /** Levite's voice: es-US Chirp 3 HD, Charon. */
     var voice = "es-US-Chirp3-HD-Charon"
 
     /** [text] said, as an MP3 in the cache (the same text is not asked twice), or null. */
     fun say(text: String): java.io.File? {
         val key = BuildConfig.TTS_KEY_LEVITE
-        if (key.isBlank()) return null
+        if (key.isBlank()) { problem = "Esta versión no trae la clave de la voz"; return null }
         val name = java.security.MessageDigest.getInstance("SHA-256").digest((voice + "|" + text).toByteArray())
             .joinToString("") { "%02x".format(it) }.take(32)
         val dir = java.io.File(context.cacheDir, "voz").apply { mkdirs() }
@@ -207,13 +212,20 @@ class CloudVoice(private val context: Context) {
             c.setRequestProperty("X-Android-Package", context.packageName)
             sha1()?.let { c.setRequestProperty("X-Android-Cert", it) }
             c.outputStream.use { it.write(body) }
-            if (c.responseCode !in 200..299) return null
+            val code = c.responseCode
+            if (code !in 200..299) {
+                val said = runCatching { c.errorStream?.use { it.readBytes().decodeToString() } }.getOrNull().orEmpty()
+                problem = runCatching { org.json.JSONObject(said).getJSONObject("error").getString("message") }.getOrNull() ?: "HTTP $code"
+                return null
+            }
             val audio = org.json.JSONObject(c.inputStream.use { it.readBytes().decodeToString() }).getString("audioContent")
             file.writeBytes(android.util.Base64.decode(audio, android.util.Base64.DEFAULT))
             // Keep only the last 200 readings.
             dir.listFiles()?.sortedByDescending { it.lastModified() }?.drop(200)?.forEach { it.delete() }
+            problem = null
             file
         } catch (e: Exception) {
+            problem = "Sin internet (${e.javaClass.simpleName})"
             null
         }
     }

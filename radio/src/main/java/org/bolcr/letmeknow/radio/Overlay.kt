@@ -373,6 +373,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         wm.addView(root, overlayParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         panel = root
         card = c
+        movable(c, root)
         // It grows out of the bubbles' corner.
         c.post {
             c.pivotX = if (onLeft) c.width.toFloat() else 0f
@@ -384,6 +385,63 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         }
         bubbles?.visibility = View.GONE
         return c
+    }
+
+    /**
+     * The window moves where the finger takes it (touching anywhere that is not a button) and stays there the next
+     * time; it never leaves the screen, also when it grows (answering, quick replies).
+     */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun movable(c: View, root: View) {
+        val slop = ViewConfiguration.get(context).scaledTouchSlop
+        fun keepIn() {
+            if (root.width == 0 || c.width == 0) return
+            c.translationX = c.translationX.coerceIn(-c.left.toFloat(), (root.width - c.right).toFloat())
+            c.translationY = c.translationY.coerceIn(-c.top.toFloat(), maxOf(0, root.height - c.bottom).toFloat())
+        }
+        var placed = false
+        c.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            if (!placed && c.width > 0) {
+                placed = true
+                val x = Settings.panelX(context)
+                val y = Settings.panelY(context)
+                if (x >= 0 && y >= 0) {
+                    c.translationX = (x - c.left).toFloat()
+                    c.translationY = (y - c.top).toFloat()
+                }
+            }
+            keepIn()
+        }
+        var downX = 0f
+        var downY = 0f
+        var startX = 0f
+        var startY = 0f
+        var moving = false
+        c.setOnTouchListener { v, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = e.rawX; downY = e.rawY; startX = v.translationX; startY = v.translationY; moving = false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = e.rawX - downX
+                    val dy = e.rawY - downY
+                    if (!moving && (abs(dx) > slop || abs(dy) > slop)) {
+                        moving = true
+                        v.animate().scaleX(1.02f).scaleY(1.02f).setDuration(120).start()
+                    }
+                    if (moving) {
+                        v.translationX = startX + dx
+                        v.translationY = startY + dy
+                        keepIn()
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (moving) {
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                    Settings.setPanelPlace(context, (v.left + v.translationX).toInt(), (v.top + v.translationY).toInt())
+                }
+            }
+            true
+        }
     }
 
     fun openPanel(key: String) {

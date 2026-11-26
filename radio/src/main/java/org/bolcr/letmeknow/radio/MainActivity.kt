@@ -103,6 +103,28 @@ class MainActivity : Activity() {
         }
         col.addView(card(size), spaced())
 
+        // Google's voice: works, or why not (so the pastor can tell what to fix).
+        val voiceState = text("", 20f, look.soft, false)
+        val voiceRow = row()
+        voiceRow.addView(text("Voz de Google", 22f, look.ink, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        voiceRow.addView(pill("Probar la voz", Look.BLUE, Look.ON_BLUE) {
+            voiceState.text = "Probando…"
+            voiceState.setTextColor(look.soft)
+            Thread {
+                val ok = CloudVoice(this).say("Hola, soy la voz de LetMeKnow. " + System.currentTimeMillis() % 1000) != null
+                runOnUiThread {
+                    voiceState.text = if (ok) "✓ Funciona" else "✗ " + (CloudVoice.problem ?: "No respondió")
+                    voiceState.setTextColor(if (ok) Look.GREEN else Look.RED)
+                }
+            }.start()
+        })
+        col.addView(card(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(voiceRow)
+            addView(voiceState, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(10) })
+        }), spaced())
+        CloudVoice.problem?.let { voiceState.text = "✗ $it"; voiceState.setTextColor(Look.RED) }
+
         val address = EditText(this).apply {
             setText(Settings.phoneAddress(this@MainActivity))
             hint = "Se busca solo"
