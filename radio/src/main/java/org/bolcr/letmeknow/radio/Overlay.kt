@@ -683,8 +683,15 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         root.addView(c, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         // Focusable, unlike the bubbles, so it hears the back button.
         wm.addView(root, overlayParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
-            flags = flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+            flags = (flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()) or
+                WindowManager.LayoutParams.FLAG_FULLSCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
         })
+        // The whole screen, also over the radio's bar (back, home, the clock): the window has the focus, so it may
+        // hide the bars while it is open; a swipe from the edge shows them for a moment.
+        @Suppress("DEPRECATION")
+        root.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
         root.requestFocus()
         listenHome()
         panel = root

@@ -1,5 +1,10 @@
 # LetMeKnow del radio
 
+## 1.0.10
+
+- La ventana del mensaje tapa también la barra del radio (atrás, inicio, la hora) mientras está abierta. Deslizando desde el borde, la barra sale un momento.
+- Al volver el Wi-Fi (al encender el carro), el radio se conecta otra vez al teléfono de una vez, sin esperar a que la conexión vieja se dé por perdida (hasta medio minuto).
+
 ## 1.0.9
 
 - Al arrastrar una burbuja se mueve solo esa, sea cual sea; las demás se quedan quietas.
