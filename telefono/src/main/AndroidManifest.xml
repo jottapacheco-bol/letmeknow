@@ -10,6 +10,11 @@
     <!-- "Ver en el teléfono" opens WhatsApp (or the app) while LetMeKnow is in the background. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Stays awake (a quiet notification), so the radio finds the phone as soon as the car starts. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- After restarting the phone, ready without opening LetMeKnow. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- The list of apps to choose from, their names and icons. -->
     <queries>
@@ -36,6 +41,22 @@
             </intent-filter>
         </activity>
 
+        <service
+            android:name=".telefono.KeepAlive"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the connection with the car radio open, so its notifications reach the radio" />
+        </service>
+        <receiver
+            android:name=".telefono.Starter"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
         <service
             android:name=".telefono.Listener"
             android:exported="true"

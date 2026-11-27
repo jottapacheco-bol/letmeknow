@@ -34,6 +34,7 @@ class Listener : NotificationListenerService() {
         Server.snapshot = { current().map { it.toJson() } }
         Server.onCommand = ::command
         Server.start(this)
+        KeepAlive.start(this)
     }
 
     override fun onListenerDisconnected() {

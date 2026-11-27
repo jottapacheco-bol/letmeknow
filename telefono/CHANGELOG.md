@@ -1,5 +1,10 @@
 # LetMeKnow del teléfono
 
+## 1.0.7
+
+- LetMeKnow se queda despierto en el teléfono (con una notificación pequeña y callada, «Listo para el radio del carro»). Antes Android lo congelaba cuando el teléfono pasaba un rato sin uso, y al encender el carro el radio no lo encontraba hasta que llegaba un mensaje nuevo o se abría la app.
+- Al reiniciar el teléfono queda listo solo, sin abrir LetMeKnow.
+
 ## 1.0.6
 
 - «Teléfono» en el radio vuelve a abrir la conversación en el teléfono: Android 16 y los siguientes solo lo dejaban con LetMeKnow en pantalla.
