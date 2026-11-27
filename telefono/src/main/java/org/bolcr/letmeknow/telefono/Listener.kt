@@ -97,10 +97,12 @@ class Listener : NotificationListenerService() {
         try {
             // From Android 14 an app in the background may start a screen only if it says so; "Mostrar sobre otras
             // apps" (asked on the main screen) is what lets it.
+            // From Android 16 "allowed" only works while LetMeKnow is on screen; "always" (3,
+            // MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS) is what opens WhatsApp with the phone in the pocket.
             val options = if (Build.VERSION.SDK_INT >= 34) {
-                @Suppress("DEPRECATION")
+                @Suppress("DEPRECATION", "WrongConstant")
                 ActivityOptions.makeBasic()
-                    .setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                    .setPendingIntentBackgroundActivityStartMode(if (Build.VERSION.SDK_INT >= 36) 3 else ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
                     .toBundle()
             } else null
             intent.send(this, 0, null, null, null, null, options)

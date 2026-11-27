@@ -1,5 +1,9 @@
 # LetMeKnow del teléfono
 
+## 1.0.6
+
+- «Teléfono» en el radio vuelve a abrir la conversación en el teléfono: Android 16 y los siguientes solo lo dejaban con LetMeKnow en pantalla.
+
 ## 1.0.5
 
 - Si Android deja de pasarle las notificaciones a LetMeKnow (Samsung a veces lo hace), LetMeKnow le pide que vuelva a pasárselas, sin tener que abrir la app.
