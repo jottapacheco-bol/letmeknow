@@ -14,15 +14,42 @@ object Settings {
     fun lastPhone(c: Context): String? = prefs(c).getString("last", null)
     fun setLastPhone(c: Context, v: String) = prefs(c).edit().putString("last", v).apply()
 
-    /** A sound when a notification arrives. On by default. */
-    fun sound(c: Context): Boolean = prefs(c).getBoolean("sound", true)
-    fun setSound(c: Context, v: Boolean) = prefs(c).edit().putBoolean("sound", v).apply()
+    /**
+     * What happens when a message arrives, one of three: [VOICE] says "Notificación nueva de …", [SOUND] plays the
+     * phone's tone, [NONE] only shows the bubble. Before version 1.0.8 they were two switches.
+     */
+    const val VOICE = "voice"
+    const val SOUND = "sound"
+    const val NONE = "none"
 
-    /** Read every new message aloud by itself. Off by default. */
+    fun arrival(c: Context): String = prefs(c).getString("arrival", null) ?: when {
+        prefs(c).getBoolean("announce", false) -> VOICE
+        prefs(c).getBoolean("sound", true) -> SOUND
+        else -> NONE
+    }
+    fun setArrival(c: Context, v: String) = prefs(c).edit().putString("arrival", v).apply()
 
-    /** Say "Notificación nueva de …" when one arrives and is not read whole. Off by default. */
-    fun announce(c: Context): Boolean = prefs(c).getBoolean("announce", false)
-    fun setAnnounce(c: Context, v: Boolean) = prefs(c).edit().putBoolean("announce", v).apply()
+    /** The tone when a notification arrives. */
+    fun sound(c: Context): Boolean = arrival(c) == SOUND
+
+    /** Say "Notificación nueva de …" when one arrives and is not read whole. */
+    fun announce(c: Context): Boolean = arrival(c) == VOICE
+
+    /** How many times each emoji was sent, for the ten shown first in "Rápidas". */
+    fun emojiUses(c: Context): Map<String, Int> = try {
+        val o = org.json.JSONObject(prefs(c).getString("emojis", "{}"))
+        o.keys().asSequence().associateWith { o.optInt(it) }
+    } catch (e: Exception) {
+        emptyMap()
+    }
+
+    fun usedEmoji(c: Context, e: String) {
+        val m = emojiUses(c).toMutableMap()
+        m[e] = (m[e] ?: 0) + 1
+        val o = org.json.JSONObject()
+        m.forEach { (k, v) -> o.put(k, v) }
+        prefs(c).edit().putString("emojis", o.toString()).apply()
+    }
 
     /** The announcement also says how many unread messages that conversation has. Off by default. */
     fun announceCount(c: Context): Boolean = prefs(c).getBoolean("announceCount", false)
@@ -66,10 +93,21 @@ object Settings {
     /** One conversation silenced (holding its bubble), until a time. Kept until the car is turned off. */
     private val quiet = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
-    private fun conversation(n: org.bolcr.letmeknow.shared.Notice) = n.pkg + (if (n.work) "@work" else "") + "|" + n.title.ifBlank { n.key }
+    /**
+     * Which conversation a notification is: the chat's own id from the phone, which stays while WhatsApp's title
+     * changes ("Sara (4 mensajes)"; with the title, silencing for good and the rest were lost at the next message).
+     */
+    private fun conversation(n: org.bolcr.letmeknow.shared.Notice) =
+        n.pkg + (if (n.work) "@work" else "") + "|" + if (n.chat.isNotEmpty()) "#" + n.chat else n.title.ifBlank { n.key }
+
+    /** How it was named before version 1.0.8, for what was saved then. */
+    private fun older(n: org.bolcr.letmeknow.shared.Notice) = n.pkg + (if (n.work) "@work" else "") + "|" + n.title.ifBlank { n.key }
+
+    private fun <T> Map<String, T>.of(n: org.bolcr.letmeknow.shared.Notice): T? = this[conversation(n)] ?: this[older(n)]
 
     fun muted(n: org.bolcr.letmeknow.shared.Notice): Boolean =
-        muted() || conversation(n) in foreverIds || (quiet[conversation(n)] ?: 0L) > System.currentTimeMillis()
+        muted() || conversation(n) in foreverIds || older(n) in foreverIds ||
+            (quiet[conversation(n)] ?: 0L) > System.currentTimeMillis()
 
     /** A conversation silenced for good ("Siempre"), kept on the radio until "Volver a oír". */
     data class Forever(val id: String, val name: String, val app: String)
@@ -89,12 +127,8 @@ object Settings {
         foreverIds = list.map { it.id }.toSet()
         voices = flags(c, "voices")
         reads = flags(c, "reads")
-        heard = try {
-            val o = org.json.JSONObject(prefs(c).getString("heard", "{}"))
-            o.keys().asSequence().associateWithTo(LinkedHashMap()) { o.optString(it) }
-        } catch (e: Exception) {
-            LinkedHashMap()
-        }
+        heard = strings(c, "heard")
+        ignored = strings(c, "ignored")
     }
 
     /**
@@ -118,6 +152,45 @@ object Settings {
         return newer
     }
 
+    /**
+     * "Listo" (or answering) on a conversation: its messages up to now are not shown again on the radio, also after
+     * turning it off; only newer ones. Nothing changes on the phone.
+     */
+    private var ignored = LinkedHashMap<String, String>()
+
+    fun ignore(c: Context, n: org.bolcr.letmeknow.shared.Notice) {
+        ignored.remove(conversation(n))
+        ignored[conversation(n)] = mark(n)
+        while (ignored.size > 300) ignored.remove(ignored.keys.first())
+        save(c, "ignored", ignored)
+    }
+
+    /** When the newest ignored message of [n]'s conversation was written (0: none, or unknown). */
+    fun ignoredTime(n: org.bolcr.letmeknow.shared.Notice): Long =
+        ignored[conversation(n)]?.takeIf { it.startsWith("t") }?.drop(1)?.toLongOrNull() ?: 0
+
+    /** Whether [n] brings nothing newer than what was ignored with "Listo". */
+    fun ignored(n: org.bolcr.letmeknow.shared.Notice): Boolean {
+        val before = ignored[conversation(n)] ?: return false
+        val m = mark(n)
+        if (before == m) return true
+        if (!before.startsWith("t") || !m.startsWith("t")) return false
+        return n.newest <= (before.drop(1).toLongOrNull() ?: 0)
+    }
+
+    private fun save(c: Context, name: String, map: Map<String, String>) {
+        val o = org.json.JSONObject()
+        map.forEach { (k, v) -> o.put(k, v) }
+        prefs(c).edit().putString(name, o.toString()).apply()
+    }
+
+    private fun strings(c: Context, name: String): LinkedHashMap<String, String> = try {
+        val o = org.json.JSONObject(prefs(c).getString(name, "{}"))
+        o.keys().asSequence().associateWithTo(LinkedHashMap()) { o.optString(it) }
+    } catch (e: Exception) {
+        LinkedHashMap()
+    }
+
     /** Everything the phone shows when the radio connects: shown as bubbles, not announced. */
     fun hearAll(c: Context, list: List<org.bolcr.letmeknow.shared.Notice>) {
         remember(c, list.associate { conversation(it) to mark(it) })
@@ -126,9 +199,7 @@ object Settings {
     private fun remember(c: Context, marks: Map<String, String>) {
         marks.forEach { (k, v) -> heard.remove(k); heard[k] = v }
         while (heard.size > 300) heard.remove(heard.keys.first())
-        val o = org.json.JSONObject()
-        heard.forEach { (k, v) -> o.put(k, v) }
-        prefs(c).edit().putString("heard", o.toString()).apply()
+        save(c, "heard", heard)
     }
 
     private fun flags(c: Context, name: String): Map<String, Boolean> = try {
@@ -156,7 +227,7 @@ object Settings {
     fun muteForever(c: Context, n: org.bolcr.letmeknow.shared.Notice) {
         val id = conversation(n)
         val app = if (n.work) "${n.app} · Trabajo" else n.app
-        saveForever(c, forever.filter { it.id != id } + Forever(id, n.title.ifBlank { n.app }, app))
+        saveForever(c, forever.filter { it.id != id && it.id != older(n) } + Forever(id, n.title.ifBlank { n.app }, app))
     }
 
     fun hearAgain(c: Context, id: String) = saveForever(c, forever.filter { it.id != id })
@@ -164,7 +235,7 @@ object Settings {
     /** The voice that reads each conversation: true a woman's, false a man's; the others take [femaleVoice]. */
     @Volatile private var voices: Map<String, Boolean> = emptyMap()
 
-    fun female(c: Context, n: org.bolcr.letmeknow.shared.Notice): Boolean = voices[conversation(n)] ?: femaleVoice(c)
+    fun female(c: Context, n: org.bolcr.letmeknow.shared.Notice): Boolean = voices.of(n) ?: femaleVoice(c)
 
     fun setFemale(c: Context, n: org.bolcr.letmeknow.shared.Notice, female: Boolean) {
         voices = voices + (conversation(n) to female)
@@ -174,7 +245,7 @@ object Settings {
     /** The conversations read aloud by themselves when a message arrives (chosen one by one); the others are not. */
     @Volatile private var reads: Map<String, Boolean> = emptyMap()
 
-    fun autoRead(n: org.bolcr.letmeknow.shared.Notice): Boolean = reads[conversation(n)] ?: false
+    fun autoRead(n: org.bolcr.letmeknow.shared.Notice): Boolean = reads.of(n) ?: false
 
     fun setAutoRead(c: Context, n: org.bolcr.letmeknow.shared.Notice, on: Boolean) {
         reads = reads + (conversation(n) to on)

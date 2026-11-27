@@ -57,10 +57,14 @@ class RadioService : Service() {
             Protocol.ALL -> {
                 val list = msg.optJSONArray("list")
                 val all = (0 until (list?.length() ?: 0)).mapNotNull { runCatching { Notice.fromJson(list!!.getJSONObject(it)) }.getOrNull() }
-                Settings.hearAll(this, all)
-                Inbox.replace(all)
+                // What was ignored with "Listo" doesn't come back.
+                val shown = all.filter { !Settings.ignored(it) }
+                Settings.hearAll(this, shown)
+                Inbox.replace(shown) { Settings.ignoredTime(it) }
             }
-            Protocol.POST -> msg.optJSONObject("n")?.let { runCatching { Notice.fromJson(it) }.getOrNull() }?.let { Inbox.put(it, Settings.fresh(this, it)) }
+            Protocol.POST -> msg.optJSONObject("n")?.let { runCatching { Notice.fromJson(it) }.getOrNull() }?.let {
+                if (Settings.ignored(it)) Inbox.remove(it.key) else Inbox.put(it, Settings.fresh(this, it), Settings.ignoredTime(it))
+            }
             Protocol.REMOVE -> Inbox.remove(msg.optString("key"))
             Protocol.TONE -> runCatching {
                 val bytes = android.util.Base64.decode(msg.optString("sound"), android.util.Base64.DEFAULT)
