@@ -889,6 +889,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         }
         place(listen, 0)
         speaker.onSpeaking = { on -> beat(listen.getChildAt(0), on || chain.isNotEmpty()) }
+        speaker.onSound = { sounding(listen.getChildAt(0)) }
         if (n.canReply) {
             place(action(R.drawable.ic_mic, "Responder", Look.BLUE, Look.ON_BLUE, size = size) { showReply(key) }, 1)
             place(action(R.drawable.ic_smile, "Rápidas", look.chip, look.ink, accent = Look.ORANGE, size = size) { showQuick(key) }, 2)
@@ -1675,6 +1676,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             return
         }
         speaker.onSpeaking = {}
+        speaker.onSound = {}
         ripples.start()
         d.start()
     }
@@ -2109,16 +2111,34 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         return frame
     }
 
-    /** While it reads, the speaker button shows bars that move like a voice, inside the button (nothing grows). */
+    /**
+     * While it reads, the speaker button shows what is happening inside it (nothing grows): three dots while the voice
+     * is being made, and bars that move like a voice once it sounds ([sounding]).
+     */
     private fun beat(v: View, on: Boolean) {
         pulse?.cancel()
         val btn = v as? FrameLayout ?: return
         val icon = btn.getChildAt(0)
-        (btn.findViewWithTag<View>("bars"))?.let { btn.removeView(it) }
+        val bars = btn.findViewWithTag<View>("bars")
+        // Between two messages read one after the other, the next one is being made: dots again.
+        if (on && bars != null && speaker.sounding) return
+        btn.findViewWithTag<View>("dots")?.let { btn.removeView(it) }
+        bars?.let { btn.removeView(it) }
         icon.alpha = if (on) 0f else 1f
         if (!on) return
-        val bars = SpeakBars(context, Look.ON_ORANGE).apply { tag = "bars" }
+        val dots = LoadDots(context, Look.ON_ORANGE).apply { tag = "dots" }
+        btn.addView(dots, FrameLayout.LayoutParams(look.px(64), look.px(52), Gravity.CENTER))
+    }
+
+    /** The voice sounds now: the dots give way to the bars. */
+    private fun sounding(v: View) {
+        val btn = v as? FrameLayout ?: return
+        if (btn.findViewWithTag<View>("bars") != null) return
+        btn.findViewWithTag<View>("dots")?.let { btn.removeView(it) }
+        btn.getChildAt(0).alpha = 0f
+        val bars = SpeakBars(context, Look.ON_ORANGE).apply { tag = "bars"; alpha = 0f }
         btn.addView(bars, FrameLayout.LayoutParams(look.px(64), look.px(52), Gravity.CENTER))
+        bars.animate().alpha(1f).setDuration(150).start()
     }
 
     private fun ago(time: Long): String {
@@ -2157,6 +2177,33 @@ class Ripples(context: Context, private val color: Int) : View(context) {
             paint.color = color
             paint.alpha = ((1f - p) * 180).toInt()
             canvas.drawCircle(width / 2f, height / 2f, base + (max - base) * p, paint)
+        }
+    }
+}
+
+/** Three dots that rise and fall softly one after the other: the voice is being made, it doesn't sound yet. */
+class LoadDots(context: Context, color: Int) : View(context) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color }
+    private var t = 0f
+    private val anim = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 1100; repeatCount = ValueAnimator.INFINITE
+        interpolator = android.view.animation.LinearInterpolator()
+        addUpdateListener { t = it.animatedValue as Float; invalidate() }
+    }
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); anim.start() }
+    override fun onDetachedFromWindow() { super.onDetachedFromWindow(); anim.cancel() }
+
+    override fun onDraw(canvas: Canvas) {
+        val r = minOf(width / 10f, height / 6f)
+        val gap = r * 3.2f
+        val cx = width / 2f
+        val cy = height / 2f
+        for (i in 0 until 3) {
+            // Each one a third of a turn after the one before.
+            val k = (kotlin.math.sin((t - i / 6f) * Math.PI * 2).toFloat() * 0.5f + 0.5f)
+            paint.alpha = (110 + 145 * k).toInt()
+            canvas.drawCircle(cx + (i - 1) * gap, cy - r * 1.1f * k, r * (0.85f + 0.15f * k), paint)
         }
     }
 }

@@ -32,6 +32,8 @@ class Speaker(context: Context) {
     private var pending: String? = null
     /** Told when reading starts (true) and ends (false), for the speaker button's animation. */
     var onSpeaking: (Boolean) -> Unit = {}
+    /** Told when the voice really starts sounding (after getting it from Google), so the button stops "loading". */
+    var onSound: () -> Unit = {}
     /** Told when a reading ends by itself (not when stopped), so the next thing in line can sound. */
     var onIdle: () -> Unit = {}
     /** From asking Google until the last word: nothing else should start sounding meanwhile. */
@@ -49,7 +51,7 @@ class Speaker(context: Context) {
         if (ready) {
             tts.language = Locale("es", "CR")
             tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(id: String?) { main.post { onSpeaking(true) } }
+                override fun onStart(id: String?) { main.post { onSpeaking(true); onSound() } }
                 override fun onDone(id: String?) { main.post { ended() } }
                 @Deprecated("Deprecated in Java")
                 override fun onError(id: String?) { main.post { ended() } }
@@ -97,6 +99,7 @@ class Speaker(context: Context) {
             p.prepare()
             p.start()
             player = p
+            onSound()
             true
         } catch (e: Exception) {
             // Never left open: a radio has only so many players, and once they are used up it goes silent.
@@ -127,6 +130,9 @@ class Speaker(context: Context) {
     }
 
     val speaking: Boolean get() = active || player != null || (ready && tts.isSpeaking)
+
+    /** The voice is heard now (not only being made). */
+    val sounding: Boolean get() = player != null || (ready && tts.isSpeaking)
 
     /** "Notificación nueva de …": only who (and, with [count], how many are unread), when it is not read whole now. */
     fun announce(n: Notice, count: Int = 0) {
