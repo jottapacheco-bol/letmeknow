@@ -63,12 +63,13 @@ class Listener : NotificationListenerService() {
     }
 
     private fun signature(n: Notice) =
-        n.title + "\u0000" + n.text + "\u0000" + n.lines.size + "\u0000" + (n.media != null) + (n.audio?.size ?: 0)
+        n.title + "\u0000" + n.text + "\u0000" + n.lines.size + "\u0000" + n.newest + "\u0000" + (n.media != null) + (n.audio?.size ?: 0)
 
     private fun command(msg: JSONObject) {
         when (msg.optString("t")) {
             Protocol.OPEN -> open(msg.optString("key"))
             Protocol.REPLY -> reply(msg.optString("key"), msg.optString("text"))
+            Protocol.MARK_READ -> markRead(msg.optString("key"))
         }
     }
 
@@ -123,6 +124,28 @@ class Listener : NotificationListenerService() {
         }
     }
 
+    /** WhatsApp's "Marcar como leído": marks the chat read in the app itself, as if pressed on the phone. */
+    private fun markRead(key: String) {
+        val sbn = find(key) ?: return
+        val action = readAction(sbn.notification) ?: return
+        try {
+            action.actionIntent.send()
+        } catch (e: PendingIntent.CanceledException) {
+            Log.w("LetMeKnow", "Could not mark as read", e)
+        }
+    }
+
+    private fun readAction(n: Notification): Notification.Action? {
+        val actions = n.actions ?: return null
+        if (Build.VERSION.SDK_INT >= 28) {
+            actions.firstOrNull { it.semanticAction == Notification.Action.SEMANTIC_ACTION_MARK_AS_READ }?.let { return it }
+        }
+        return actions.firstOrNull { a ->
+            val t = a.title?.toString()?.lowercase().orEmpty()
+            a.remoteInputs.isNullOrEmpty() && (t.contains("leído") || t.contains("leido") || t.contains("read"))
+        }
+    }
+
     private fun replyAction(n: Notification): Notification.Action? {
         val actions = n.actions ?: return null
         val withInput = actions.filter { a -> a.remoteInputs?.any { it.allowFreeFormInput } == true }
@@ -143,8 +166,9 @@ class Listener : NotificationListenerService() {
         if (sbn.isOngoing) return null
         val ex = n.extras
         val all = rawMessages(ex)
-        val lines = all.takeLast(6)
-            .map { Line(it.senderPerson?.name?.toString().orEmpty(), it.text?.toString().orEmpty()) }
+        // Every message the notification still has (WhatsApp keeps the unread ones), so the radio can show them all.
+        val lines = all.takeLast(40)
+            .map { Line(it.senderPerson?.name?.toString().orEmpty(), it.text?.toString().orEmpty(), it.timestamp) }
             .filter { it.text.isNotBlank() }
         val title = (ex.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)
             ?: ex.getCharSequence(Notification.EXTRA_TITLE))?.toString()?.trim().orEmpty()
@@ -163,6 +187,7 @@ class Listener : NotificationListenerService() {
             time = sbn.postTime,
             voice = VOICE.containsMatchIn(last),
             canReply = replyAction(n) != null,
+            canRead = readAction(n) != null,
             icon = icon(pkg, sbn.user),
             photo = photo(n),
             media = m.picture,
@@ -172,6 +197,8 @@ class Listener : NotificationListenerService() {
             audioType = m.audioType,
             work = work,
             newest = all.lastOrNull()?.timestamp?.takeIf { it > 0 } ?: n.`when`.takeIf { it > 0 } ?: 0,
+            // WhatsApp's title changes with the number of messages; its chat's shortcut (or tag) does not.
+            chat = n.shortcutId?.takeIf { it.isNotBlank() } ?: sbn.tag?.takeIf { it.isNotBlank() } ?: "",
         )
     }
 

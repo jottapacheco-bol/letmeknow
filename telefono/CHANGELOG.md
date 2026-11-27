@@ -1,5 +1,10 @@
 # LetMeKnow del teléfono
 
+## 1.0.4
+
+- Manda al radio todos los mensajes que trae cada notificación, con su hora, y cuál es el chat de cada una (así el radio no se confunde cuando WhatsApp cambia el nombre).
+- «Leído» desde el radio marca el chat como leído en WhatsApp. Hay que poner también el radio 1.0.8.
+
 ## 1.0.3
 
 - Le dice al radio cuándo se escribió el último mensaje, para que no vuelva a anunciar los que ya se oyeron. Hay que poner también el radio 1.0.7.

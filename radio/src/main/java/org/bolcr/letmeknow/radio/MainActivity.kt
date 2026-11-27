@@ -78,6 +78,10 @@ class MainActivity : Activity() {
         col.addView(card(permission("Micrófono para responder dictando", micOk) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
         }), spaced())
+        // Seeing what plays needs "notification access" on Android; LetMeKnow reads none, it only pauses a video.
+        col.addView(card(permission("Pausar el video al abrir un mensaje", MediaWatch.allowed(this)) {
+            startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+        }), spaced())
 
         // Everything silenced for a while (one conversation is silenced holding its bubble).
         val quiet = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -212,10 +216,22 @@ class MainActivity : Activity() {
         col.addView(card(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(text("Al llegar un mensaje", 22f, look.ink, true))
-            addView(switchRow(R.drawable.ic_bell, "Sonido al llegar", Settings.sound(this@MainActivity)) { Settings.setSound(this@MainActivity, it) })
-            addView(switchRow(R.drawable.ic_chat, "Anunciar: «Notificación nueva de…»", Settings.announce(this@MainActivity)) { Settings.setAnnounce(this@MainActivity, it) })
-            addView(switchRow(R.drawable.ic_quick, "Decir cuántos mensajes sin leer", Settings.announceCount(this@MainActivity)) { Settings.setAnnounceCount(this@MainActivity, it) })
-            addView(text("«Leer en voz alta solo» se escoge en cada conversación, al sostener su burbuja. Si se lee solo, no hace falta el anuncio: ya dice de quién es. Con una ventana abierta solo se anuncia, y se lee al cerrarla.", 16f, look.soft, false),
+            // One of three: the voice says who, or only the tone, or nothing (the bubble only). Never both sounds.
+            val now = Settings.arrival(this@MainActivity)
+            listOf(
+                Triple(Settings.VOICE, "Anunciar con voz", "«Notificación nueva de Sara. Tiene 3 mensajes sin leer.»"),
+                Triple(Settings.SOUND, "Solo el sonido", "El tono del teléfono, sin voz"),
+                Triple(Settings.NONE, "Nada", "Solo aparece la burbuja"),
+            ).forEach { (id, label, sub) ->
+                val icon = when (id) { Settings.VOICE -> R.drawable.ic_chat; Settings.SOUND -> R.drawable.ic_bell; else -> R.drawable.ic_bell_off }
+                addView(choiceRow(icon, label, sub, now == id) { Settings.setArrival(this@MainActivity, id); build() },
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(10) })
+                if (id == Settings.VOICE && now == Settings.VOICE) {
+                    addView(switchRow(R.drawable.ic_quick, "Decir cuántos mensajes sin leer", Settings.announceCount(this@MainActivity)) { Settings.setAnnounceCount(this@MainActivity, it) },
+                        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(56) })
+                }
+            }
+            addView(text("«Leer en voz alta solo» se escoge en cada conversación, con su engranaje. Si se lee solo, no hace falta el anuncio: ya dice de quién es. Con una ventana abierta solo se anuncia, y se lee al cerrarla.", 16f, look.soft, false),
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(8) })
         }), spaced())
 
@@ -316,6 +332,34 @@ class MainActivity : Activity() {
     }
 
     /** A line with an icon, words and the green switch, like the ones in the bubbles' window. */
+    /** One of several choices: a round mark (filled orange when chosen), its icon, the name and a line below. */
+    private fun choiceRow(res: Int, label: String, sub: String, on: Boolean, choose: () -> Unit): View {
+        val r = row().apply {
+            setPadding(look.px(18), look.px(14), look.px(18), look.px(14))
+            background = if (on) look.round(android.graphics.Color.argb(26, 255, 138, 76), 20).apply { setStroke(look.px(2), Look.ORANGE) }
+                else look.round(look.chip, 20, stroke = true)
+            setOnClickListener { choose() }
+        }
+        val mark = android.widget.FrameLayout(this).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setStroke(look.px(3), if (on) Look.ORANGE else look.soft)
+            }
+            if (on) addView(View(this@MainActivity).apply { background = look.oval(Look.ORANGE) },
+                android.widget.FrameLayout.LayoutParams(look.px(18), look.px(18), Gravity.CENTER))
+        }
+        r.addView(mark, LinearLayout.LayoutParams(look.px(36), look.px(36)))
+        r.addView(ImageView(this).apply {
+            setImageResource(res)
+            setColorFilter(look.ink, PorterDuff.Mode.SRC_IN)
+        }, LinearLayout.LayoutParams(look.px(30), look.px(30)).apply { marginStart = look.px(16) })
+        val words = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        words.addView(text(label, 20f, look.ink, true))
+        words.addView(text(sub, 15f, look.soft, false))
+        r.addView(words, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(14) })
+        return r
+    }
+
     private fun switchRow(res: Int, label: String, on: Boolean, change: (Boolean) -> Unit): View {
         val r = row().apply { setPadding(0, look.px(10), 0, look.px(10)) }
         r.addView(ImageView(this).apply {

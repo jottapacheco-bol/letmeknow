@@ -15,7 +15,9 @@ import java.io.ByteArrayOutputStream
  * `remove` (it was read or dismissed on the phone), `pong`. Version 2 adds to a notification the picture, video
  * frame or audio that came in it (`media`, `video`, `length`, `audio`, `audioType`) and whether it came from the
  * work profile (`work`); an older radio ignores them. Version 4 adds `newest`, when the newest message was written,
- * so the radio announces only messages it hasn't heard yet.
+ * so the radio announces only messages it hasn't heard yet. Version 5 adds `chat`, the app's own name for the chat,
+ * which stays the same while the title changes ("Sara (4 mensajes)"). Version 6: each line has its time (`t`), the
+ * notification says whether it can be marked as read (`read`), and the radio may ask `markread`.
  * Radio to phone: `hello`, `open` (do what touching the notification on the phone does), `reply` (answer the chat
  * with a text, dictated or quick), `ping`.
  */
@@ -25,7 +27,7 @@ object Protocol {
     /** How the phone is announced on the network (NSD / mDNS). */
     const val SERVICE_TYPE = "_letmeknow._tcp."
     const val SERVICE_NAME = "LetMeKnow"
-    const val VERSION = 4
+    const val VERSION = 6
 
     /** The radio pings this often, and gives up on a connection that said nothing for [SILENT_MS]. */
     const val PING_MS = 10_000L
@@ -39,6 +41,8 @@ object Protocol {
     const val TONE = "tone"
     const val OPEN = "open"
     const val REPLY = "reply"
+    /** Radio to phone: press the notification's "Marcar como leído" (version 6). */
+    const val MARK_READ = "markread"
     const val PING = "ping"
     const val PONG = "pong"
 
@@ -47,7 +51,8 @@ object Protocol {
 }
 
 /** One line of a conversation (WhatsApp sends the last few messages of a chat in one notification). */
-data class Line(val sender: String, val text: String)
+/** One message of a chat: who, what, and when it was written by the phone's clock (0 if unknown; version 6). */
+data class Line(val sender: String, val text: String, val time: Long = 0)
 
 /** A notification as the radio shows it. */
 data class Notice(
@@ -81,6 +86,10 @@ data class Notice(
      * notification again without anything new. 0 if unknown.
      */
     val newest: Long = 0,
+    /** The app's own id of the chat (its conversation shortcut or tag; version 5), empty if it gives none. */
+    val chat: String = "",
+    /** The app lets mark it as read from the notification (WhatsApp's "Marcar como leído"; version 6). */
+    val canRead: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("key", key)
@@ -88,7 +97,7 @@ data class Notice(
         .put("app", app)
         .put("title", title)
         .put("text", text)
-        .put("lines", JSONArray().apply { lines.forEach { put(JSONObject().put("s", it.sender).put("x", it.text)) } })
+        .put("lines", JSONArray().apply { lines.forEach { put(JSONObject().put("s", it.sender).put("x", it.text).apply { if (it.time > 0) put("t", it.time) }) } })
         .put("time", time)
         .put("voice", voice)
         .put("reply", canReply)
@@ -99,6 +108,8 @@ data class Notice(
             if (video) put("video", true)
             if (work) put("work", true)
             if (newest > 0) put("newest", newest)
+            if (chat.isNotEmpty()) put("chat", chat)
+            if (canRead) put("read", true)
             if (length.isNotEmpty()) put("length", length)
             audio?.let { put("audio", Base64.encodeToString(it, Base64.NO_WRAP)).put("audioType", audioType) }
         }
@@ -114,7 +125,7 @@ data class Notice(
                 text = o.optString("text"),
                 lines = (0 until (lines?.length() ?: 0)).map {
                     val l = lines!!.getJSONObject(it)
-                    Line(l.optString("s"), l.optString("x"))
+                    Line(l.optString("s"), l.optString("x"), l.optLong("t"))
                 },
                 time = o.optLong("time", System.currentTimeMillis()),
                 voice = o.optBoolean("voice"),
@@ -130,6 +141,8 @@ data class Notice(
                 audioType = o.optString("audioType"),
                 work = o.optBoolean("work"),
                 newest = o.optLong("newest"),
+                chat = o.optString("chat"),
+                canRead = o.optBoolean("read"),
             )
         }
     }

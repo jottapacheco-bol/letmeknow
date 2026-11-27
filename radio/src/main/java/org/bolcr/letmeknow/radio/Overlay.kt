@@ -76,7 +76,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
 
     fun start() {
         // A reading that ends lets the next thing in line sound.
-        speaker.onIdle = { next() }
+        speaker.onIdle = { if (!readNext()) next() }
         Settings.watchers.add(silence)
         Inbox.watch(watcher)
         main.post(tick)
@@ -86,6 +86,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         Settings.watchers.remove(silence)
         Inbox.unwatch(watcher)
         main.removeCallbacks(tick)
+        settling.values.forEach { main.removeCallbacks(it) }
+        settling.clear()
         closePanel(animated = false)
         bubbles?.let { runCatching { wm.removeView(it) } }
         bubbles = null
@@ -99,12 +101,15 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     private companion object {
         /** How long a bubble shows its name before folding into its ball. */
         const val FOLD_MS = 5_000L
+        /** Several messages of one person in a row (41 photos): said once, this long after the last one came. */
+        const val SETTLE_MS = 1_200L
     }
 
     private fun changed(arrived: Notice?) {
         if (arrived?.audio != null) preload(arrived)
         if (arrived != null && !Settings.muted(arrived)) {
-            if (Settings.sound(context)) speaker.chime()
+            // One sound for a burst of messages, at the first one.
+            if (Settings.sound(context) && arrived.key !in settling) speaker.chime()
             arrive(arrived)
         }
         val open = openKey
@@ -112,7 +117,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             when {
                 // Gone from the phone (read there): the window keeps showing it, nothing closes by itself.
                 Inbox.get(open) == null -> Unit
-                arrived?.key == open && mode == Mode.READ -> showRead(open, fade = false)
+                // Not while reading the conversation aloud: the new one waits at the bottom until the reading ends.
+                arrived?.key == open && mode == Mode.READ && chain.isEmpty() -> showRead(open, fade = false)
             }
         }
         refreshBubbles(arrived)
@@ -149,7 +155,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                 setPadding(look.px(18), look.px(8), look.px(18), look.px(8))
             }
             root.addView(more, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(12) })
-            drag(more) { openPanel(notices[4].key) }
+            drag(more) { openAll() }
         }
     }
 
@@ -222,12 +228,21 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             if (n.work) marginStart = -look.px(6) else marginEnd = -look.px(6)
             topMargin = -look.px(6)
         })
+        // One message only: no number, it isn't needed.
+        if (Inbox.count(n.key) < 2) { badge.visibility = View.GONE; mini.visibility = View.GONE }
         if (unfolded[n.key] == null) fold(row, animated = false)
-        drag(row, onThrow = { Inbox.remove(n.key) }, onHold = { openMute(n) }) {
+        drag(row, onThrow = { ignore(n) }, onHold = { openMute(n) }) {
             // Folded: the first touch shows the name again; the next one opens the message.
             if (unfolded[n.key] == null) { unfold(n.key, row); foldLater(n.key, row) } else openPanel(n.key)
         }
         return row
+    }
+
+    /** Dropped on the ✕: its messages up to now don't come back to the radio (nothing changes on the phone). */
+    private fun ignore(n: Notice) {
+        Settings.ignore(context, n)
+        // After the touch ends: taking away the bubble being touched, inside its own touch, crashed the app.
+        main.post { Inbox.remove(n.key) }
     }
 
     /** Conversations showing their name now (just arrived, or touched once); the others are just the ball. */
@@ -319,10 +334,10 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     }
 
     /**
-     * Touching opens. Dragging up or down, or holding a moment and then dragging anywhere, moves all the bubbles (also
-     * to the other side of the screen), so they never cover what is behind. Holding still fills an orange ring around the photo and opens [onHold] by itself. Pulling
-     * a conversation sideways lifts it into its own little window that follows the finger anywhere; past half its
-     * width a red ✕ shows, and only lifting the finger with the ✕ showing removes it ([onThrow]). Coming back cancels.
+     * Touching opens. Dragging moves all the bubbles anywhere (also to the other side of the screen), so they never
+     * cover what is behind. Holding still fills an orange ring around the photo and opens [onHold] by itself. While
+     * dragging, a half moon with a ✕ rises at the bottom centre (like the bubbles of Messenger); letting go over it
+     * ignores this conversation ([onThrow]) and the bubbles go back where they were.
      */
     @SuppressLint("ClickableViewAccessibility")
     private fun drag(v: View, onThrow: (() -> Unit)? = null, onHold: (() -> Unit)? = null, onTap: () -> Unit) {
@@ -331,11 +346,11 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         var downX = 0f
         var startY = 0
         var startX = 0
-        // 0 nothing yet, 1 moving the bubbles, 2 throwing this one, 4 the hold already opened its window.
+        // 0 nothing yet, 1 moving the bubbles, 4 the hold already opened its window.
         var gesture = 0
         val ring = if (onHold != null) HoldRing(look.px(10) + look.px(32), look.px(42).toFloat(), look.px(5).toFloat()).also { v.foreground = it } else null
         var filling: ValueAnimator? = null
-        var ghost: Ghost? = null
+        var bin: Bin? = null
         fun stopFilling() {
             filling?.cancel()
             filling = null
@@ -373,38 +388,46 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                     val dx = e.rawX - downX
                     val dy = e.rawY - downY
                     if (gesture == 0 && (abs(dx) > slop || abs(dy) > slop)) {
-                        // Held a moment first (the ring had started): move the bubbles anywhere. A quick sideways
-                        // pull without holding: throw this one. Up or down: move.
-                        val held = (ring?.progress ?: 0f) > 0f
                         stopFilling()
                         view.animate().scaleX(1f).scaleY(1f).setDuration(90).start()
-                        gesture = if (!held && onThrow != null && abs(dx) > abs(dy) * 1.3f) 2 else 1
-                        if (held) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                        if (gesture == 2) ghost = Ghost(view)
+                        gesture = 1
+                        if (onThrow != null) bin = Bin()
                     }
-                    when (gesture) {
-                        1 -> {
-                            val width = context.resources.displayMetrics.widthPixels
-                            params.y = (startY + dy).toInt().coerceAtLeast(0)
-                            // All the way across the screen; on letting go they stick to the nearer side.
-                            val room = (width - (bubbles?.width ?: 0)).coerceAtLeast(0)
-                            params.x = (startX + if (fromEnd) -dx else dx).toInt().coerceIn(0, room)
-                            bubbles?.let { runCatching { wm.updateViewLayout(it, params) } }
+                    if (gesture == 1) {
+                        val width = context.resources.displayMetrics.widthPixels
+                        params.y = (startY + dy).toInt().coerceAtLeast(0)
+                        // All the way across the screen; on letting go they stick to the nearer side.
+                        val room = (width - (bubbles?.width ?: 0)).coerceAtLeast(0)
+                        params.x = (startX + if (fromEnd) -dx else dx).toInt().coerceIn(0, room)
+                        bubbles?.let { runCatching { wm.updateViewLayout(it, params) } }
+                        bin?.let { b ->
+                            val was = b.near
+                            b.follow(e.rawX, e.rawY)
+                            if (b.near != was) {
+                                if (b.near) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                view.animate().scaleX(if (b.near) 0.8f else 1f).scaleY(if (b.near) 0.8f else 1f).alpha(if (b.near) 0.7f else 1f).setDuration(140).start()
+                            }
                         }
-                        2 -> ghost?.follow(dx, dy)
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     stopFilling()
-                    view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                    val b = bin
+                    bin = null
+                    val dropped = b?.near == true && e.actionMasked == MotionEvent.ACTION_UP && gesture == 1
+                    b?.hide(swallow = dropped)
+                    if (dropped) {
+                        // Ignored: the bubbles go back where they were, without this one.
+                        params.x = startX; params.y = startY
+                        view.animate().scaleX(0f).scaleY(0f).alpha(0f).setDuration(180).withEndAction {
+                            bubbles?.let { runCatching { wm.updateViewLayout(it, params) } }
+                            onThrow?.invoke()
+                        }.start()
+                        return@setOnTouchListener true
+                    }
+                    view.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(120).start()
                     when (gesture) {
                         1 -> settle(params, e.rawX)
-                        2 -> {
-                            val g = ghost
-                            ghost = null
-                            if (g != null && g.past && e.actionMasked == MotionEvent.ACTION_UP) g.away { onThrow?.invoke() }
-                            else g?.back()
-                        }
                         0 -> if (e.actionMasked == MotionEvent.ACTION_UP) onTap()
                     }
                 }
@@ -414,102 +437,60 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     }
 
     /**
-     * A conversation being thrown: its picture in its own small window, so it can go anywhere on the screen without
-     * being cut by the bubbles' window. The real bubble waits, hidden, in its place.
+     * The half moon with the ✕ at the bottom centre while a bubble is dragged: in its own window that can't be
+     * touched. Near it, it turns red and grows; that is where letting go ignores the conversation.
      */
-    private inner class Ghost(private val real: View) {
-        private val home = IntArray(2).also { real.getLocationOnScreen(it) }
-        private val box = FrameLayout(context)
-        private val cross: View
+    private inner class Bin {
+        private val w = look.px(260)
+        private val h = look.px(130)
+        private val moon = FrameLayout(context).apply {
+            background = moonShape(false)
+            addView(icon(R.drawable.ic_close, android.graphics.Color.WHITE, 40, null), FrameLayout.LayoutParams(look.px(40), look.px(40), Gravity.CENTER_HORIZONTAL or Gravity.TOP).apply {
+                topMargin = look.px(30)
+            })
+            pivotX = w / 2f
+            pivotY = h.toFloat()
+            translationY = h.toFloat()
+        }
         private val params = WindowManager.LayoutParams(
-            real.width, real.height,
+            w, h,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = home[0]
-            y = home[1]
-        }
-        /** Past half its width: lifting the finger now removes it. */
-        var past = false
+        ).apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL }
+        var near = false
             private set
 
         init {
-            val picture = android.graphics.Bitmap.createBitmap(real.width.coerceAtLeast(1), real.height.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
-            real.draw(Canvas(picture))
-            box.addView(ImageView(context).apply { setImageBitmap(picture) }, FrameLayout.LayoutParams(real.width, real.height))
-            val size = look.px(64)
-            cross = icon(R.drawable.ic_close, android.graphics.Color.WHITE, 30, null).apply {
-                background = look.oval(Look.RED)
-                scaleType = ImageView.ScaleType.CENTER_INSIDE
-                setPadding(look.px(17), look.px(17), look.px(17), look.px(17))
-                alpha = 0f
-                scaleX = 0.6f; scaleY = 0.6f
-            }
-            box.addView(cross, FrameLayout.LayoutParams(size, size, Gravity.CENTER))
-            runCatching { wm.addView(box, params) }
-            real.visibility = View.INVISIBLE
+            runCatching { wm.addView(moon, params) }
+            moon.animate().translationY(0f).setDuration(260).setInterpolator(OvershootInterpolator(1.2f)).start()
         }
 
-        fun follow(dx: Float, dy: Float) {
-            params.x = (home[0] + dx).toInt()
-            params.y = (home[1] + dy * 0.4f).toInt()
-            runCatching { wm.updateViewLayout(box, params) }
-            box.rotation = dx / real.width * 8f
-            val now = abs(dx) > real.width * 0.5f
-            if (now != past) {
-                past = now
-                if (now) real.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                cross.animate().alpha(if (now) 1f else 0f).scaleX(if (now) 1f else 0.6f).scaleY(if (now) 1f else 0.6f).setDuration(140).start()
-            }
-            box.alpha = if (now) 0.75f else 1f
+        private fun moonShape(red: Boolean) = android.graphics.drawable.GradientDrawable().apply {
+            setColor(if (red) android.graphics.Color.argb(225, 232, 72, 85) else android.graphics.Color.argb(215, 20, 24, 30))
+            setStroke(look.px(2), if (red) android.graphics.Color.rgb(255, 107, 118) else android.graphics.Color.argb(90, 255, 255, 255))
+            val r = w / 2f
+            cornerRadii = floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f)
         }
 
-        /** Off the screen the way it was going, then gone. */
-        fun away(then: () -> Unit) {
-            val dir = if (params.x >= home[0]) 1 else -1
-            val from = params.x
-            val to = from + dir * (context.resources.displayMetrics.widthPixels / 2 + real.width)
-            ValueAnimator.ofInt(from, to).apply {
-                duration = 220
-                interpolator = DecelerateInterpolator()
-                addUpdateListener { params.x = it.animatedValue as Int; runCatching { wm.updateViewLayout(box, params) } }
-                addListener(object : android.animation.AnimatorListenerAdapter() {
-                    override fun onAnimationEnd(a: android.animation.Animator) {
-                        runCatching { wm.removeView(box) }
-                        then()
-                    }
-                })
-                start()
-            }
-            box.animate().alpha(0f).setDuration(220).start()
+        /** Where the finger is: near the ✕ it turns red and grows. */
+        fun follow(x: Float, y: Float) {
+            val dm = context.resources.displayMetrics
+            val cx = dm.widthPixels / 2f
+            val cy = dm.heightPixels - h * 0.5f
+            val now = abs(x - cx) < w * 0.75f && y > cy - h * 1.3f
+            if (now == near) return
+            near = now
+            moon.background = moonShape(now)
+            moon.animate().scaleX(if (now) 1.22f else 1f).scaleY(if (now) 1.22f else 1f).setDuration(160).setInterpolator(OvershootInterpolator(2f)).start()
         }
 
-        /** Changed its mind: back to its place. */
-        fun back() {
-            val fx = params.x
-            val fy = params.y
-            cross.animate().alpha(0f).setDuration(100).start()
-            box.animate().rotation(0f).alpha(1f).setDuration(260).start()
-            ValueAnimator.ofFloat(1f, 0f).apply {
-                duration = 260
-                interpolator = OvershootInterpolator(1.4f)
-                addUpdateListener {
-                    val k = it.animatedValue as Float
-                    params.x = (home[0] + (fx - home[0]) * k).toInt()
-                    params.y = (home[1] + (fy - home[1]) * k).toInt()
-                    runCatching { wm.updateViewLayout(box, params) }
-                }
-                addListener(object : android.animation.AnimatorListenerAdapter() {
-                    override fun onAnimationEnd(a: android.animation.Animator) {
-                        real.visibility = View.VISIBLE
-                        runCatching { wm.removeView(box) }
-                    }
-                })
-                start()
-            }
+        /** Goes back down; after ignoring one, a little beat first, as if it swallowed it. */
+        fun hide(swallow: Boolean) {
+            val down = { moon.animate().translationY(h.toFloat()).setDuration(220).setStartDelay(if (swallow) 200 else 0).withEndAction { runCatching { wm.removeView(moon) } }.start() }
+            if (swallow) moon.animate().scaleX(1.35f).scaleY(1.35f).setDuration(120).withEndAction { moon.animate().scaleX(1f).scaleY(1f).setDuration(120).start(); down() }.start()
+            else down()
         }
     }
 
@@ -533,7 +514,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
 
     // ---------------------------------------------------------------- the panel
 
-    private enum class Mode { READ, REPLY, QUICK, MUTE }
+    private enum class Mode { READ, REPLY, QUICK, MUTE, LIST, EMOJI }
     private var mode = Mode.READ
 
     private fun createPanel(): LinearLayout {
@@ -559,19 +540,13 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         }
         val c = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            background = look.round(look.panel, 36, stroke = true)
-            elevation = look.px(24).toFloat()
+            // The whole screen, solid: what is behind (a video) doesn't show through.
+            setBackgroundColor(look.solidBack)
             setPadding(look.px(34), look.px(30), look.px(34), look.px(30))
             isClickable = true
         }
-        // As big as the screen lets it (a small margin, below the radio's top bar), so nothing is ever cut.
         val onLeft = !Settings.bubblesLeft(context)
-        val bar = context.resources.getIdentifier("status_bar_height", "dimen", "android")
-            .let { if (it != 0) context.resources.getDimensionPixelSize(it) else 0 }
-        val m = look.px(18)
-        root.addView(c, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
-            setMargins(m, bar + m, m, m)
-        })
+        root.addView(c, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         // Focusable, unlike the bubbles, so it hears the back button.
         wm.addView(root, overlayParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
             flags = flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
@@ -590,6 +565,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             c.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(420).setInterpolator(DecelerateInterpolator(2f)).start()
         }
         bubbles?.visibility = View.GONE
+        // A video behind stops while the window covers it; music goes on.
+        MediaWatch.pauseVideos(context)
         return c
     }
 
@@ -619,18 +596,84 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         showRead(key, fade = false)
     }
 
+    /** «+6»: the window with every conversation, to choose one. */
+    fun openAll() {
+        if (!allowed()) return
+        createPanel()
+        showAll()
+    }
+
+    /** Every conversation, newest on top: the photo, who, the app, the last message and how many; a touch opens it. */
+    private fun showAll() {
+        val c = card ?: return
+        mode = Mode.LIST
+        openKey = null
+        kept = null
+        stopChain()
+        speaker.stop()
+        stopAudio()
+        dictation?.stop()
+        fill(c, whole = false)
+        c.gravity = Gravity.TOP
+        val all = Inbox.all.filter { !Settings.muted(it) }
+        val h = row(Gravity.CENTER_VERTICAL)
+        h.addView(icon(R.drawable.ic_list, look.ink, 34, null), LinearLayout.LayoutParams(look.px(34), look.px(34)))
+        h.addView(text("Todas las conversaciones · ${all.size}", 30f, look.ink, bold = true).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(14) })
+        h.addView(small(R.drawable.ic_close, "Cerrar") { closePanel() })
+        c.addView(h, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = look.px(14) })
+        val list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        all.forEachIndexed { i, n ->
+            val r = row(Gravity.CENTER_VERTICAL).apply {
+                background = if (i == 0) look.round(android.graphics.Color.argb(26, 255, 138, 76), 24, stroke = true) else look.round(look.chip, 24, stroke = true)
+                setPadding(look.px(20), look.px(12), look.px(20), look.px(12))
+                contentDescription = "${n.title}, ${n.app}"
+                setOnClickListener { showRead(n.key, fade = true) }
+            }
+            r.addView(avatar(n, 60), LinearLayout.LayoutParams(look.px(60), look.px(60)))
+            val words = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+            val top = android.text.SpannableStringBuilder(n.title.ifBlank { n.app })
+            val nameEnd = top.length
+            top.append("  ${appLine(n)} · ${ago(n.time)}")
+            top.setSpan(android.text.style.StyleSpan(android.graphics.Typeface.BOLD), 0, nameEnd, 0)
+            top.setSpan(android.text.style.ForegroundColorSpan(look.soft), nameEnd, top.length, 0)
+            top.setSpan(android.text.style.RelativeSizeSpan(0.68f), nameEnd, top.length, 0)
+            words.addView(text("", 25f, look.ink).apply { text = Emoji.of(top); isSingleLine = true; ellipsize = TextUtils.TruncateAt.END })
+            val last = n.lines.lastOrNull()
+            words.addView(text(if (n.voice) "Mensaje de voz" else said(n, last?.sender.orEmpty(), last?.text ?: n.text), 20f, look.soft).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END })
+            r.addView(words, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(18); marginEnd = look.px(12) })
+            val count = Inbox.count(n.key)
+            if (count > 1) {
+                r.addView(text(count.toString(), 19f, Look.ON_ORANGE, bold = true).apply {
+                    gravity = Gravity.CENTER
+                    background = look.round(Look.ORANGE, 18)
+                    minWidth = look.px(36)
+                    setPadding(look.px(10), 0, look.px(10), 0)
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(36)))
+            }
+            list.addView(r, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { if (i > 0) topMargin = look.px(12) })
+            r.alpha = 0f
+            r.translationY = look.px(16).toFloat()
+            r.animate().alpha(1f).translationY(0f).setStartDelay(minOf(i, 8) * 50L).setDuration(320).start()
+        }
+        c.addView(ScrollView(context).apply { addView(list) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+    }
+
     fun closePanel(animated: Boolean = true) {
         val root = panel ?: return
         main.post { releaseLater() }
         home?.let { runCatching { context.unregisterReceiver(it) } }
         home = null
         stopAudio()
+        stopChain()
+        MediaWatch.resumeVideos()
+        shownMsgs.clear()
+        chatScroll = null
         big = null
         dictation?.stop()
         dictation = null
         pulse?.cancel()
         speaker.stop()
-        openKey?.let { if (Inbox.get(it) != null) Inbox.seen(it) }
         openKey = null
         kept = null
         panel = null
@@ -668,6 +711,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         val c = card ?: return
         val n = find(key) ?: return closePanel()
         kept = n
+        stopChain()
         mode = Mode.READ
         openKey = key
         dictation?.stop()
@@ -699,14 +743,14 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             v.translationX = -look.px(24).toFloat()
             v.animate().alpha(1f).translationX(0f).setStartDelay(i * 60L).setDuration(300).start()
         }
-        val listen = action(R.drawable.ic_speaker, "Escuchar", Look.ORANGE, Look.ON_ORANGE, size = size) {
-            if (speaker.speaking) { speaker.stop(); next() } else speaker.read(n)
+        val listen = action(R.drawable.ic_speaker, "Leer desde aquí", Look.ORANGE, Look.ON_ORANGE, size = size) {
+            if (chain.isNotEmpty() || speaker.speaking) { stopChain(); speaker.stop(); next() } else readFromHere()
         }
         place(listen, 0)
-        speaker.onSpeaking = { on -> beat(listen.getChildAt(0), on) }
+        speaker.onSpeaking = { on -> beat(listen.getChildAt(0), on || chain.isNotEmpty()) }
         if (n.canReply) {
             place(action(R.drawable.ic_mic, "Responder", Look.BLUE, Look.ON_BLUE, size = size) { showReply(key) }, 1)
-            place(action(R.drawable.ic_quick, "Rápida", look.chip, look.ink, accent = Look.ORANGE, size = size) { showQuick(key) }, 2)
+            place(action(R.drawable.ic_smile, "Rápidas", look.chip, look.ink, accent = Look.ORANGE, size = size) { showQuick(key) }, 2)
         }
         place(action(R.drawable.ic_phone, "Teléfono", look.chip, look.ink, size = size) {
             send(Protocol.message(Protocol.OPEN) { put("key", key) })
@@ -715,7 +759,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         }, 3)
         whole.addView(rail, LinearLayout.LayoutParams(size + look.px(40), ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // The name on top, the words below.
+        // The name on top, the whole conversation below: the newest message big at the bottom, the earlier ones
+        // above it, a finger's scroll away.
         val right = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(look.px(28), look.px(20), look.px(24), look.px(20))
@@ -726,79 +771,86 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, look.px(1).coerceAtLeast(1)).apply { topMargin = look.px(16); bottomMargin = look.px(14) })
 
         val body = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        val lines = n.lines
+        val msgs = messagesOf(key)
+        keptMsgs = msgs
+        shownMsgs.clear()
         val scale = Settings.textScale(context)
-        if (n.audio != null) {
-            body.addView(audioRow(n))
-        } else if (n.voice) {
-            body.addView(voiceRow(n))
-        } else {
-            lines.dropLast(1).takeLast(2).forEach { l ->
-                body.addView(text(said(n, l.sender, l.text), 23f * scale, look.faint), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = look.px(8) })
+        msgs.forEachIndexed { i, m ->
+            val newest = i == msgs.lastIndex
+            val card = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                background = look.round(look.chip, 22, stroke = true)
+                setPadding(look.px(20), look.px(12), look.px(20), look.px(14))
             }
-            val last = lines.lastOrNull()
-            val words = if (last != null) said(n, last.sender, last.text) else n.text
-            // A long message shrinks a little by itself, never below what can be read from the seat.
-            val fit = when {
-                words.length > 400 -> 0.72f
-                words.length > 220 -> 0.85f
-                else -> 1f
-            }
-            val shown = text(words, (42f * scale * fit).coerceAtLeast(30f), look.ink, bold = true).apply {
-                setLineSpacing(0f, 1.12f)
-            }
-            val media = n.media
-            if (media != null) {
-                // A picture or a video: its thumbnail beside the words; touching it shows it big.
-                val side = minOf(look.px(300), (room * 0.48f).toInt())
-                val withPicture = row(Gravity.TOP)
-                withPicture.addView(thumb(n, media, side), LinearLayout.LayoutParams(side, side))
-                withPicture.addView(shown, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(20) })
-                body.addView(withPicture, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(4) })
+            val top = row(Gravity.CENTER_VERTICAL)
+            top.addView(text(m.sender.ifBlank { n.title.ifBlank { n.app } }, 16f, look.soft, bold = true).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (m.time > 0) top.addView(text(clockOf(m.time), 16f, look.soft, bold = true))
+            card.addView(top)
+            val audioHere = newest && n.audio != null && m.audio != null
+            val voiceHere = newest && n.voice && m.voice
+            if (audioHere) {
+                card.addView(audioRow(n), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(8) })
+            } else if (voiceHere) {
+                card.addView(voiceRow(n), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(8) })
             } else {
-                body.addView(shown, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(4) })
+                // The newest big; a long one shrinks a little by itself, never below what can be read from the seat.
+                val fit = when {
+                    m.text.length > 400 -> 0.72f
+                    m.text.length > 220 -> 0.85f
+                    else -> 1f
+                }
+                val words = if (newest) text(m.text, (42f * scale * fit).coerceAtLeast(30f), look.ink, bold = true).apply { setLineSpacing(0f, 1.12f) }
+                    else text(m.text, 25f * scale, look.ink)
+                val media = m.media
+                if (media != null) {
+                    val side = if (newest) minOf(look.px(300), (room * 0.48f).toInt()) else look.px(170)
+                    val withPicture = row(Gravity.TOP)
+                    withPicture.addView(thumb(n.copy(video = m.video, length = m.length), media, side), LinearLayout.LayoutParams(side, side))
+                    withPicture.addView(words, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(20) })
+                    card.addView(withPicture, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(6) })
+                } else {
+                    card.addView(words, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(4) })
+                }
             }
+            body.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { if (i > 0) topMargin = look.px(12) })
+            shownMsgs += card to m
         }
-        // What doesn't fit scrolls with the finger; a small arrow that bobs says there is more.
-        val scroll = ScrollView(context).apply { addView(body); isVerticalScrollBarEnabled = false }
-        val more = icon(R.drawable.ic_next, Look.ORANGE, 36, "Hay más texto").apply {
-            rotation = 90f
-            background = look.oval(look.panel)
+        // Earlier messages above: the window opens at the bottom, on the newest; a small sign says there are more.
+        val scroll = ScrollView(context).apply { addView(body); isVerticalScrollBarEnabled = true; isScrollbarFadingEnabled = true }
+        chatScroll = scroll
+        val earlier = (msgs.size - 1).coerceAtLeast(0)
+        val more = row(Gravity.CENTER).apply {
+            background = look.round(look.solidBack, 22, stroke = true)
+            setPadding(look.px(16), 0, look.px(18), 0)
+            addView(icon(R.drawable.ic_up, look.soft, 22, null), LinearLayout.LayoutParams(look.px(22), look.px(22)))
+            addView(text(if (earlier == 1) "1 mensaje antes" else "$earlier mensajes antes", 16f, look.soft, bold = true),
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(8) })
             visibility = View.GONE
+            setOnClickListener { scroll.smoothScrollTo(0, 0) }
         }
         val textBox = FrameLayout(context).apply {
             addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            addView(more, FrameLayout.LayoutParams(look.px(48), look.px(48), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+            addView(more, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(44), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = look.px(6) })
         }
         right.addView(textBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        scroll.post {
+            scroll.scrollTo(0, body.height)
+            if (earlier > 0 && scroll.canScrollVertically(-1)) {
+                more.visibility = View.VISIBLE
+                more.alpha = 0f
+                more.animate().alpha(1f).setDuration(250).start()
+            }
+            scroll.setOnScrollChangeListener { v, _, _, _, _ ->
+                val top = !v.canScrollVertically(-1)
+                more.animate().alpha(if (top || earlier == 0) 0f else 1f).setDuration(150).start()
+            }
+        }
 
-        // Several conversations: a low bar at the bottom, and a sideways swipe on the words does the same.
+        // Several conversations: a sideways swipe on the words goes to the next or the one before, like pages.
         val all = Inbox.all
         val at = all.indexOfFirst { it.key == n.key }
         if (all.size > 1) {
-            fun go(by: Int) {
-                val next = all[(at + by + all.size) % all.size].key
-                textBox.animate().translationX(-by * look.px(80).toFloat()).alpha(0f).setDuration(140)
-                    .withEndAction { showRead(next, fade = true) }.start()
-            }
-            val bar = row(Gravity.CENTER_VERTICAL)
-            fun flat(res: Int, description: String, by: Int) = FrameLayout(context).apply {
-                background = look.round(look.chip, 26, stroke = true)
-                contentDescription = description
-                setOnClickListener { go(by) }
-                addView(icon(res, look.ink, 30, null).apply { minimumWidth = 0; minimumHeight = 0 },
-                    FrameLayout.LayoutParams(look.px(30), look.px(30), Gravity.CENTER))
-            }
-            bar.addView(flat(R.drawable.ic_prev, "Anterior", -1), LinearLayout.LayoutParams(look.px(170), look.px(52)))
-            val dots = row(Gravity.CENTER)
-            all.take(8).forEachIndexed { i, _ ->
-                val d = View(context).apply { background = look.round(if (i == at) Look.ORANGE else look.off, 5) }
-                dots.addView(d, LinearLayout.LayoutParams(look.px(if (i == at) 26 else 10), look.px(10)).apply { marginStart = look.px(4); marginEnd = look.px(4) })
-            }
-            bar.addView(dots, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            bar.addView(flat(R.drawable.ic_next, "Siguiente", 1), LinearLayout.LayoutParams(look.px(170), look.px(52)))
-            right.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(12) })
-
             val far = look.px(110)
             var sx = 0f
             var sy = 0f
@@ -812,27 +864,89 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                         val dx = e.rawX - sx
                         val swiped = e.actionMasked == MotionEvent.ACTION_UP && abs(dx) > far && abs(dx) > abs(e.rawY - sy) * 1.5f
-                        // To the left shows the next one, to the right the one before, like turning pages.
-                        if (swiped) go(if (dx < 0) 1 else -1) else textBox.animate().translationX(0f).setDuration(150).start()
+                        if (swiped) {
+                            val by = if (dx < 0) 1 else -1
+                            val next = all[(at + by + all.size) % all.size].key
+                            textBox.animate().translationX(-by * look.px(80).toFloat()).alpha(0f).setDuration(140)
+                                .withEndAction { showRead(next, fade = true) }.start()
+                        } else textBox.animate().translationX(0f).setDuration(150).start()
                     }
                 }
                 false
             }
         }
-        scroll.post {
-            if (!scroll.canScrollVertically(1)) return@post
-            more.visibility = View.VISIBLE
-            ObjectAnimator.ofFloat(more, View.TRANSLATION_Y, 0f, look.px(8).toFloat(), 0f).apply {
-                duration = 1000; repeatCount = ValueAnimator.INFINITE; start()
-            }
-            scroll.setOnScrollChangeListener { v, _, _, _, _ ->
-                val end = !v.canScrollVertically(1)
-                more.animate().alpha(if (end) 0f else 1f).setDuration(150).start()
-            }
-        }
         body.alpha = 0f
         body.translationY = look.px(16).toFloat()
         body.animate().alpha(1f).translationY(0f).setStartDelay(if (fade) 0 else 300).setDuration(380).start()
+    }
+
+    // ---------------------------------------------------------------- the whole conversation, read aloud
+
+    /** The messages shown in the window, each with its card, oldest first. */
+    private val shownMsgs = ArrayList<Pair<View, Msg>>()
+    private var chatScroll: ScrollView? = null
+    /** What the window showed, kept if the phone takes the notification away. */
+    private var keptMsgs: List<Msg> = emptyList()
+
+    private fun messagesOf(key: String): List<Msg> {
+        val now = Inbox.messages(key)
+        if (now.isNotEmpty()) return now
+        if (kept?.key == key && keptMsgs.isNotEmpty()) return keptMsgs
+        val n = find(key) ?: return emptyList()
+        val l = n.lines.lastOrNull()
+        return listOf(Msg(l?.sender.orEmpty(), l?.text ?: n.text, n.newest, n.media, n.video, n.length, n.audio, n.voice))
+    }
+
+    private fun clockOf(time: Long): String =
+        java.text.SimpleDateFormat("h:mm a", java.util.Locale("es", "CR")).format(java.util.Date(time))
+
+    /** The messages still to read, after the one being read now; empty when not reading. */
+    private val chain = ArrayDeque<Pair<View, Msg>>()
+    private var chainNow: View? = null
+
+    /** From the first message seen at the top of the window to the newest, one after the other. */
+    private fun readFromHere() {
+        val n = openKey?.let { find(it) } ?: return
+        val scroll = chatScroll ?: return
+        stopChain()
+        val y = scroll.scrollY
+        val first = shownMsgs.indexOfFirst { (v, _) -> v.bottom > y + look.px(8) }.coerceAtLeast(0)
+        shownMsgs.drop(first).forEach { chain.addLast(it) }
+        readNext(n, first = true)
+    }
+
+    /** Says the next one in [chain]; false when there is nothing more (the line goes on with what waits). */
+    private fun readNext(n: Notice? = openKey?.let { find(it) }, first: Boolean = false): Boolean {
+        chainNow?.let { mark(it, false) }
+        chainNow = null
+        val (v, m) = chain.removeFirstOrNull() ?: return false
+        if (n == null) { chain.clear(); return false }
+        mark(v, true)
+        chainNow = v
+        chatScroll?.smoothScrollTo(0, (v.top - look.px(8)).coerceAtLeast(0))
+        val who = n.title.ifBlank { n.app }
+        val sender = m.sender.takeIf { it.isNotBlank() && it != n.title }
+        val what = if (m.voice || m.audio != null) "un mensaje de voz" else m.text
+        val words = when {
+            first && sender != null -> "$sender, en $who: $what"
+            first -> "$who: $what"
+            sender != null -> "$sender: $what"
+            else -> what
+        }
+        speaker.say(words, if (Settings.female(context, n)) CloudVoice.FEMALE else CloudVoice.MALE)
+        return true
+    }
+
+    private fun stopChain() {
+        chain.clear()
+        chainNow?.let { mark(it, false) }
+        chainNow = null
+    }
+
+    /** The message being read: light blue around it. */
+    private fun mark(v: View, on: Boolean) {
+        v.background = if (on) look.round(android.graphics.Color.argb(40, 56, 198, 244), 22).apply { setStroke(look.px(2), Look.BLUE) }
+            else look.round(look.chip, 22, stroke = true)
     }
 
     private fun appLine(n: Notice) = if (n.work) "${n.app} · Trabajo" else n.app
@@ -849,21 +963,45 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         val h = row(Gravity.CENTER_VERTICAL)
         h.addView(avatar(n, 68), LinearLayout.LayoutParams(look.px(68), look.px(68)))
         val names = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
-        names.addView(text(n.title.ifBlank { n.app }, 30f, look.ink, bold = true).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END; includeFontPadding = false })
-        names.addView(text("${appLine(n)} · ${ago(n.time)}", 17f, look.soft).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END },
+        names.addView(text(n.title.ifBlank { n.app }, 28f, look.ink, bold = true).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END; includeFontPadding = false })
+        val unread = Inbox.count(n.key)
+        val sub = android.text.SpannableStringBuilder("${appLine(n)} · ${ago(n.time)}")
+        if (full && unread > 1) {
+            val from = sub.length
+            sub.append(" · $unread sin leer")
+            sub.setSpan(android.text.style.ForegroundColorSpan(Look.ORANGE), from, sub.length, 0)
+            sub.setSpan(android.text.style.StyleSpan(android.graphics.Typeface.BOLD), from, sub.length, 0)
+        }
+        names.addView(text("", 16f, look.soft).apply { text = Emoji.of(sub); isSingleLine = true; ellipsize = TextUtils.TruncateAt.END },
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(4) })
         h.addView(names, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(16); marginEnd = look.px(10) })
+        val side = look.px(if (full) 56 else 64)
         fun gap() = h.addView(View(context).apply { setBackgroundColor(look.edge) },
-            LinearLayout.LayoutParams(look.px(1).coerceAtLeast(1), look.px(44)).apply { marginStart = look.px(10); marginEnd = look.px(10) })
-        fun smallAt(v: View, first: Boolean = false) = h.addView(v, LinearLayout.LayoutParams(look.px(64), look.px(64)).apply { if (!first) marginStart = look.px(10) })
+            LinearLayout.LayoutParams(look.px(1).coerceAtLeast(1), look.px(44)).apply { marginStart = look.px(8); marginEnd = look.px(8) })
+        fun smallAt(v: View, first: Boolean = false) = h.addView(v, LinearLayout.LayoutParams(side, side).apply { if (!first) marginStart = look.px(8) })
+        val all = Inbox.all
+        val at = all.indexOfFirst { it.key == n.key }
         if (full) {
             smallAt(smallText("A−", "Letra más pequeña") { Settings.setTextScale(context, Settings.textScale(context) - 0.1f); showRead(n.key, fade = true) }, first = true)
             smallAt(smallText("A+", "Letra más grande") { Settings.setTextScale(context, Settings.textScale(context) + 0.1f); showRead(n.key, fade = true) })
-            smallAt(small(R.drawable.ic_bell_off, "Silenciar esta conversación", tint = Look.PURPLE) { openMute(n) })
-        }
-        val all = Inbox.all
-        val at = all.indexOfFirst { it.key == n.key }
-        if (all.size > 1 && !full) {
+            smallAt(small(R.drawable.ic_settings, "Ajustes de esta conversación") { openMute(n, fromWindow = true) })
+            gap()
+            smallAt(small(R.drawable.ic_list, "Todas las conversaciones") { showAll() }, first = true)
+            if (all.size > 1) {
+                smallAt(small(R.drawable.ic_prev, "Anterior") { showRead(all[(at - 1 + all.size) % all.size].key, fade = true) })
+                smallAt(small(R.drawable.ic_next, "Siguiente") { showRead(all[(at + 1) % all.size].key, fade = true) })
+            }
+            gap()
+            // Ignorar: not shown again on the radio (nothing changes on the phone). Leído: also read in WhatsApp.
+            h.addView(pill(R.drawable.ic_eye_off, "Ignorar", look.chip, look.ink, stroke = true) { done(n.key, closeAfter = false) },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, side))
+            if (n.canRead) {
+                h.addView(pill(R.drawable.ic_done_all, "Leído", Look.GREEN, Look.ON_GREEN) {
+                    send(Protocol.message(Protocol.MARK_READ) { put("key", n.key) })
+                    done(n.key, closeAfter = false)
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, side).apply { marginStart = look.px(8) })
+            }
+        } else if (all.size > 1) {
             smallAt(small(R.drawable.ic_prev, "Anterior") { showRead(all[(at - 1 + all.size) % all.size].key, fade = true) })
             val dots = row(Gravity.CENTER).apply { setPadding(look.px(6), 0, look.px(6), 0) }
             all.take(6).forEachIndexed { i, _ ->
@@ -873,20 +1011,21 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             h.addView(dots, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(6) })
             smallAt(small(R.drawable.ic_next, "Siguiente") { showRead(all[(at + 1) % all.size].key, fade = true) })
         }
-        if (full) {
-            gap()
-            val ok = row(Gravity.CENTER).apply {
-                background = look.round(Look.GREEN, 32)
-                setPadding(look.px(16), 0, look.px(22), 0)
-                contentDescription = "Listo"
-                addView(icon(R.drawable.ic_check, Look.ON_GREEN, 30, null), LinearLayout.LayoutParams(look.px(30), look.px(30)))
-                addView(text("Listo", 20f, Look.ON_GREEN, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(8) })
-                setOnClickListener { done(n.key, closeAfter = false) }
-            }
-            h.addView(ok, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(64)))
-        }
         smallAt(small(R.drawable.ic_close, "Cerrar") { closePanel() })
         return h
+    }
+
+    /** A rounded button with an icon and a word (Ignorar, Leído). */
+    private fun pill(res: Int, words: String, fill: Int, ink: Int, stroke: Boolean = false, onClick: () -> Unit) = row(Gravity.CENTER).apply {
+        background = look.round(fill, 28, stroke = stroke)
+        setPadding(look.px(14), 0, look.px(20), 0)
+        contentDescription = words
+        addView(icon(res, ink, 28, null), LinearLayout.LayoutParams(look.px(28), look.px(28)))
+        addView(text(words, 19f, ink, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(8) })
+        setOnClickListener {
+            animate().scaleX(0.92f).scaleY(0.92f).setDuration(80).withEndAction { animate().scaleX(1f).scaleY(1f).setDuration(140).start() }.start()
+            onClick()
+        }
     }
 
     /** The picture shown big over the whole window, if it is. */
@@ -1013,15 +1152,28 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
      * only announced and read when the window closes; with "anunciar" just who sent it.
      */
     private fun arrive(n: Notice) {
+        // It waits until that person stops sending for a moment; then it is said once, with how many came.
+        settling.remove(n.key)?.let { main.removeCallbacks(it) }
+        val r = Runnable { settling.remove(n.key); settled(n.key) }
+        settling[n.key] = r
+        main.postDelayed(r, SETTLE_MS)
+    }
+
+    /** Conversations still receiving a burst of messages, and what says them once it ends. */
+    private val settling = HashMap<String, Runnable>()
+
+    private fun settled(key: String) {
+        val n = Inbox.get(key) ?: return
+        if (Settings.muted(n)) return
         val whole = Settings.autoRead(n)
+        queue.removeAll { it.key == key }
         when {
             whole && panel != null && openKey != n.key -> { later.add(n.key); queue.add(Turn(n.key, whole = false)) }
             whole -> queue.add(Turn(n.key, whole = true))
             Settings.announce(context) -> queue.add(Turn(n.key, whole = false))
             else -> return
         }
-        // After the arrival sound.
-        main.postDelayed({ next() }, 700)
+        next()
     }
 
     private fun busy(): Boolean =
@@ -1308,15 +1460,35 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         d.start()
     }
 
-    /** Four answers of one touch. */
+    /** Answers of one touch: the ten emojis used most (and «+» for all of them), and four phrases. */
     private fun showQuick(key: String) {
         val c = card ?: return
         val n = find(key) ?: return
         mode = Mode.QUICK
+        speaker.stop()
+        stopChain()
         fill(c, whole = false)
+        c.gravity = Gravity.TOP
         c.addView(header(n))
-        c.addView(text("RESPUESTAS RÁPIDAS", 18f, look.soft, bold = true).apply { letterSpacing = 0.08f },
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(24); bottomMargin = look.px(14) })
+        fun label(words: String, top: Int) = c.addView(text(words, 17f, look.soft, bold = true).apply { letterSpacing = 0.08f },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(top); bottomMargin = look.px(12) })
+        label("LOS QUE MÁS USA", 20)
+        val faces = row(Gravity.CENTER_VERTICAL)
+        favorites().forEachIndexed { i, e ->
+            val b = emojiButton(e, 84, first = i == 0) { sendEmoji(key, e) }
+            faces.addView(b, LinearLayout.LayoutParams(0, look.px(84), 1f).apply { if (i > 0) marginStart = look.px(10) })
+            b.alpha = 0f
+            b.scaleX = 0.5f; b.scaleY = 0.5f
+            b.animate().alpha(1f).scaleX(1f).scaleY(1f).setStartDelay(i * 35L).setDuration(300).setInterpolator(OvershootInterpolator(1.6f)).start()
+        }
+        val plus = icon(R.drawable.ic_add, Look.ON_ORANGE, 40, "Todos los emojis").apply {
+            background = look.round(Look.ORANGE, 22)
+            setPadding(look.px(22), look.px(22), look.px(22), look.px(22))
+            setOnClickListener { showEmojis(key, 0) }
+        }
+        faces.addView(plus, LinearLayout.LayoutParams(0, look.px(84), 1f).apply { marginStart = look.px(10) })
+        c.addView(faces, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        label("FRASES", 22)
         val quick = listOf(
             Triple(R.drawable.ic_car, "Voy manejando", Look.ORANGE),
             Triple(R.drawable.ic_thumb, "Ok, perfecto", Look.GREEN),
@@ -1330,47 +1502,134 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                     background = look.round(look.chip, 28, stroke = true)
                     setPadding(look.px(22), 0, look.px(22), 0)
                     contentDescription = words
-                    val box = icon(ic, tint, 32, null).apply {
+                    val box = icon(ic, tint, 30, null).apply {
                         background = look.round(android.graphics.Color.argb(40, android.graphics.Color.red(tint), android.graphics.Color.green(tint), android.graphics.Color.blue(tint)), 18)
-                        setPadding(look.px(12), look.px(12), look.px(12), look.px(12))
+                        setPadding(look.px(11), look.px(11), look.px(11), look.px(11))
                     }
-                    addView(box, LinearLayout.LayoutParams(look.px(56), look.px(56)))
-                    addView(text(words, 28f, look.ink, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(18) })
+                    addView(box, LinearLayout.LayoutParams(look.px(52), look.px(52)))
+                    addView(text(words, 26f, look.ink, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(16) })
                     setOnClickListener {
                         send(Protocol.message(Protocol.REPLY) { put("key", key).put("text", words) })
                         done(key, closeAfter = false)
                     }
                 }
-                line.addView(chip, LinearLayout.LayoutParams(0, look.px(96), 1f).apply { if (i == 0) marginEnd = look.px(18) })
+                line.addView(chip, LinearLayout.LayoutParams(0, look.px(84), 1f).apply { if (i == 0) marginEnd = look.px(14) })
                 chip.alpha = 0f
                 chip.translationY = look.px(24).toFloat()
-                chip.animate().alpha(1f).translationY(0f).setStartDelay((r * 2 + i) * 70L).setDuration(350).start()
+                chip.animate().alpha(1f).translationY(0f).setStartDelay(300 + (r * 2 + i) * 70L).setDuration(350).start()
             }
-            c.addView(line, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = look.px(18) })
+            c.addView(line, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = look.px(14) })
         }
+        c.addView(View(context), LinearLayout.LayoutParams(0, 0, 1f))
         val back = row(Gravity.CENTER)
-        back.addView(action(R.drawable.ic_prev, "Volver", look.chip, look.ink, size = look.px(96)) { showRead(key, fade = true) })
+        back.addView(action(R.drawable.ic_prev, "Volver", look.chip, look.ink, size = look.px(84)) { showRead(key, fade = true) })
         c.addView(back)
     }
 
-    /** Holding a bubble: silence that conversation for a while; below, the sound, reading aloud and the letters. */
-    private fun openMute(n: Notice) {
-        if (!allowed()) return
-        val c = createPanel()
-        mode = Mode.MUTE
-        openKey = null
+    /** The ten shown first: the ones sent most, then the usual ones. */
+    private fun favorites(): List<String> {
+        val uses = Settings.emojiUses(context)
+        val usual = listOf("👍", "❤️", "😊", "🙏", "😂", "😢", "💔", "👏", "🔥", "✅")
+        return (uses.entries.sortedByDescending { it.value }.map { it.key } + usual).distinct().take(10)
+    }
+
+    private fun emojiButton(e: String, sizeDp: Int, first: Boolean = false, onClick: () -> Unit) = text(e, sizeDp * 0.42f, look.ink).apply {
+        gravity = Gravity.CENTER
+        includeFontPadding = false
+        background = if (first) look.round(android.graphics.Color.argb(46, 255, 138, 76), 22).apply { setStroke(look.px(2), Look.ORANGE) }
+            else look.round(look.chip, 22, stroke = true)
+        contentDescription = "Mandar $e"
+        setOnClickListener {
+            animate().scaleX(1.25f).scaleY(1.25f).setDuration(110).withEndAction { animate().scaleX(1f).scaleY(1f).setDuration(140).start() }.start()
+            onClick()
+        }
+    }
+
+    /** An emoji goes as the answer, like a phrase; it counts for the ten used most. */
+    private fun sendEmoji(key: String, e: String) {
+        Settings.usedEmoji(context, e)
+        send(Protocol.message(Protocol.REPLY) { put("key", key).put("text", e) })
+        main.postDelayed({ if (openKey == key || mode == Mode.QUICK || mode == Mode.EMOJI) done(key, closeAfter = false) }, 180)
+    }
+
+    private val emojiGroups = listOf(
+        "😊" to "Caritas" to listOf("😀", "😃", "😄", "😁", "😆", "🥹", "😅", "🤣", "😂", "🙂", "😉", "😊", "😇", "🥰", "😍", "🤩",
+            "😘", "😋", "😜", "🤗", "🤔", "🤐", "😐", "😴", "😷", "🤒", "😎", "🥳", "😔", "😟", "😢", "😭", "😤", "😡", "😱", "🙄"),
+        "👍" to "Manos" to listOf("👍", "👎", "👌", "✌️", "🤞", "🤝", "🙌", "👏", "🙏", "💪", "👋", "🤙", "👊", "✋", "☝️", "👉"),
+        "❤️" to "Corazones" to listOf("❤️", "🧡", "💛", "💚", "💙", "💜", "🤍", "🖤", "💔", "❣️", "💕", "💖", "💗", "💘", "💝", "💯"),
+        "🎉" to "Cosas" to listOf("🔥", "✨", "🎉", "🎂", "🎁", "✅", "❌", "⏰", "🚗", "⛪", "📖", "🎵", "☕", "🍕", "⚽", "🌹", "☀️", "🌧️", "📞", "🏠"),
+    )
+
+    /** «+»: every emoji, by groups; a touch sends it. */
+    private fun showEmojis(key: String, group: Int) {
+        val c = card ?: return
+        val n = find(key) ?: return
+        mode = Mode.EMOJI
         fill(c, whole = false)
+        c.gravity = Gravity.TOP
+        val h = row(Gravity.CENTER_VERTICAL)
+        h.addView(small(R.drawable.ic_prev, "Volver") { showQuick(key) })
+        h.addView(text("Todos los emojis", 28f, look.ink, bold = true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(16) })
+        h.addView(avatar(n, 52), LinearLayout.LayoutParams(look.px(52), look.px(52)).apply { marginEnd = look.px(10) })
+        h.addView(small(R.drawable.ic_close, "Cerrar") { closePanel() })
+        c.addView(h)
+        val tabs = row(Gravity.CENTER_VERTICAL)
+        emojiGroups.forEachIndexed { i, (name, _) ->
+            val on = i == group
+            tabs.addView(text("${name.first} ${name.second}", 19f, if (on) Look.ON_ORANGE else look.ink, bold = true).apply {
+                gravity = Gravity.CENTER
+                background = if (on) look.round(Look.ORANGE, 29) else look.round(look.chip, 29, stroke = true)
+                setPadding(look.px(20), 0, look.px(20), 0)
+                setOnClickListener { if (!on) showEmojis(key, i) }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, look.px(58)).apply { if (i > 0) marginStart = look.px(10) })
+        }
+        c.addView(tabs, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(14); bottomMargin = look.px(14) })
+        val side = 78
+        val width = context.resources.displayMetrics.widthPixels - look.px(68)
+        val columns = (width / (look.px(side) + look.px(10))).coerceAtLeast(4)
+        val grid = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        emojiGroups[group].second.chunked(columns).forEachIndexed { r, line ->
+            val lr = row(Gravity.CENTER_VERTICAL)
+            line.forEachIndexed { i, e ->
+                val b = emojiButton(e, side) { sendEmoji(key, e) }
+                lr.addView(b, LinearLayout.LayoutParams(look.px(side), look.px(side)).apply { if (i > 0) marginStart = look.px(10) })
+                b.alpha = 0f
+                b.animate().alpha(1f).setStartDelay((r * columns + i) * 12L).setDuration(200).start()
+            }
+            grid.addView(lr, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { if (r > 0) topMargin = look.px(10) })
+        }
+        c.addView(ScrollView(context).apply { addView(grid) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+    }
+
+    /**
+     * The gear (or holding a bubble): this conversation's settings. Hide it for a while or for good, its voice and
+     * whether it is read aloud by itself. From the message window ([fromWindow]) closing goes back to the message.
+     */
+    private fun openMute(n: Notice, fromWindow: Boolean = false) {
+        if (!allowed()) return
+        val c = if (fromWindow) card ?: return else createPanel()
+        mode = Mode.MUTE
+        if (!fromWindow) openKey = null
+        speaker.stop()
+        stopAudio()
+        fill(c, whole = false)
+        c.gravity = Gravity.TOP
         val h = row(Gravity.CENTER_VERTICAL)
         h.addView(avatar(n, 64), LinearLayout.LayoutParams(look.px(64), look.px(64)))
         val names = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         names.addView(row(Gravity.CENTER_VERTICAL).apply {
-            addView(icon(R.drawable.ic_bell_off, look.ink, 30, null), LinearLayout.LayoutParams(look.px(30), look.px(30)))
-            addView(text("Silenciar", 28f, look.ink, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(10) })
+            addView(icon(R.drawable.ic_settings, look.ink, 30, null), LinearLayout.LayoutParams(look.px(30), look.px(30)))
+            addView(text("Ajustes de esta conversación", 28f, look.ink, bold = true), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(10) })
         })
-        names.addView(text(n.title.ifBlank { n.app }, 20f, look.soft).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END })
+        names.addView(text("${n.title.ifBlank { n.app }} · ${appLine(n)}", 20f, look.soft).apply { isSingleLine = true; ellipsize = TextUtils.TruncateAt.END })
         h.addView(names, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = look.px(18) })
-        h.addView(small(R.drawable.ic_close, "Cerrar") { closePanel() })
+        h.addView(small(R.drawable.ic_close, "Cerrar") { if (fromWindow) showRead(n.key, fade = true) else closePanel() })
         c.addView(h)
+        c.addView(row(Gravity.CENTER_VERTICAL).apply {
+            addView(icon(R.drawable.ic_clock, look.soft, 22, null), LinearLayout.LayoutParams(look.px(22), look.px(22)))
+            addView(text("OCULTAR POR UN RATO", 17f, look.soft, bold = true).apply { letterSpacing = 0.06f },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = look.px(10) })
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(18) })
 
         fun mute(until: Long) {
             Settings.mute(n, until)
@@ -1404,20 +1663,24 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         val always = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            background = look.round(Look.WORK, 24)
-            contentDescription = "Silenciar para siempre"
-            addView(icon(R.drawable.ic_infinity, android.graphics.Color.WHITE, 44, null), LinearLayout.LayoutParams(look.px(44), look.px(36)))
-            addView(text("Siempre", 17f, android.graphics.Color.WHITE, bold = true).apply { gravity = Gravity.CENTER },
+            background = look.round(look.chip, 24).apply { setStroke(look.px(2), look.soft) }
+            contentDescription = "Ocultar para siempre"
+            addView(icon(R.drawable.ic_infinity, look.ink, 44, null), LinearLayout.LayoutParams(look.px(44), look.px(36)))
+            addView(text("Siempre", 17f, look.ink, bold = true).apply { gravity = Gravity.CENTER },
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             setOnClickListener { Settings.muteForever(context, n); closePanel() }
         }
         grid.addView(always, LinearLayout.LayoutParams(0, look.px(92), 1.25f))
-        ObjectAnimator.ofPropertyValuesHolder(always,
+        val beatAlways = ObjectAnimator.ofPropertyValuesHolder(always,
             PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.05f, 1f),
             PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.05f, 1f)).apply {
             duration = 1600; repeatCount = ValueAnimator.INFINITE; start()
         }
-        c.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(22) })
+        always.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) = Unit
+            override fun onViewDetachedFromWindow(v: View) = beatAlways.cancel()
+        })
+        c.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(12) })
 
         c.addView(View(context).apply { setBackgroundColor(look.edge) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, look.px(1).coerceAtLeast(1)).apply { topMargin = look.px(22); bottomMargin = look.px(12) })
         // The voice that reads this conversation; touching one says a sample with it.
@@ -1452,7 +1715,6 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         }
         paintChips()
         c.addView(voiceLine, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = look.px(6) })
-        c.addView(toggle(R.drawable.ic_bell, "Sonido al llegar", Settings.sound(context)) { Settings.setSound(context, it) })
         // Only this conversation; the others keep theirs (or the one in the radio's settings).
         c.addView(toggle(R.drawable.ic_speaker, "Leer en voz alta solo", Settings.autoRead(n)) { Settings.setAutoRead(context, n, it) })
     }
@@ -1460,6 +1722,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     /** "Listo": a green check grows, then the next conversation (or the panel closes). */
     private fun done(key: String, closeAfter: Boolean) {
         val c = card ?: return
+        // Its messages up to now don't come back to the radio, not even after turning it off.
+        find(key)?.let { Settings.ignore(context, it) }
         dictation?.stop()
         c.removeAllViews()
         val check = icon(R.drawable.ic_check, Look.ON_GREEN, 80, "Listo").apply {

@@ -60,6 +60,16 @@
                 android:value="Shows the phone's notifications on the car's radio" />
         </service>
 
+        <!-- Only to see what plays: a video behind pauses while the message window covers it. Reads no notification. -->
+        <service
+            android:name=".MediaWatch"
+            android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".Starter"
             android:exported="true">

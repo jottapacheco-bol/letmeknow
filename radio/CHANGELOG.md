@@ -1,5 +1,19 @@
 # LetMeKnow del radio
 
+## 1.0.8
+
+- La ventana ocupa toda la pantalla y muestra la conversación entera: el último mensaje en grande abajo y los anteriores arriba, para verlos bajando con el dedo. Si había un video, se pone en pausa mientras está abierta (la música sigue); para eso hay que dar el permiso «Pausar el video al abrir un mensaje» en la pantalla de LetMeKnow.
+- «Leer desde aquí» lee desde el mensaje que está arriba en pantalla y sigue con los que vienen después, marcando en celeste el que lee.
+- «Ignorar» y «Leído» en lugar de «Listo». Ignorar: esos mensajes ya no vuelven a salir en el radio, aunque lo apague; los nuevos sí. Leído: además los marca como leídos en WhatsApp.
+- Engranaje gris (en lugar de la campanita morada): ajustes de esta conversación, con ocultar por un rato o para siempre, la voz y leer en voz alta solo.
+- Al tocar «+6» se abre la lista de todas las conversaciones; también con el botón de la lista en la ventana.
+- Rápidas: los 10 emojis que más usa y «+» para buscar los demás, además de las frases.
+- Para ignorar una burbuja se arrastra a la X que sale abajo en el centro (ya no se tira hacia un lado).
+- «Al llegar un mensaje» es una sola opción: anunciar con voz, solo el sonido o nada.
+- Varios mensajes seguidos de una persona se anuncian una sola vez, con cuántos son, cuando dejan de llegar por un momento; y suena una sola vez.
+- «Silenciar para siempre» y lo ya oído ya funcionan aunque WhatsApp cambie el nombre de la conversación con el número de mensajes.
+- El número de la burbuja solo sale con 2 o más mensajes.
+
 ## 1.0.7
 
 - Al conectarse con el teléfono, las notificaciones que ya estaban salen como burbujas, sin sonar ni anunciarse. Solo se anuncian los mensajes nuevos.
