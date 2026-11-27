@@ -49,7 +49,10 @@ class Link(context: Context, private val onMessage: (JSONObject) -> Unit, privat
         cm.registerNetworkCallback(
             NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(),
             object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) { wake.offer(Unit) }
+                // The Wi-Fi came back (the car started again): a connection from before is dead even if it doesn't
+                // know yet, and would wait up to half a minute to find out. A new one is made right away.
+                override fun onAvailable(network: Network) { drop(); wake.offer(Unit) }
+                override fun onLost(network: Network) { drop() }
             })
         discover()
     }
@@ -59,6 +62,8 @@ class Link(context: Context, private val onMessage: (JSONObject) -> Unit, privat
         runCatching { socket?.close() }
         wake.offer(Unit)
     }
+
+    private fun drop() { runCatching { socket?.close() } }
 
     fun send(line: String) {
         writes.execute {

@@ -38,6 +38,9 @@ class Listener : NotificationListenerService() {
 
     override fun onListenerDisconnected() {
         if (instance === this) instance = null
+        // Android (Samsung above all) sometimes lets go of the listener; ask for it back, or nothing reaches the radio
+        // until LetMeKnow is opened.
+        rebind(this)
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -353,6 +356,11 @@ class Listener : NotificationListenerService() {
     companion object {
         @Volatile var instance: Listener? = null
             private set
+
+        /** Asks Android to bind the listener again, when it is allowed but not running. */
+        fun rebind(c: android.content.Context) {
+            runCatching { NotificationListenerService.requestRebind(android.content.ComponentName(c, Listener::class.java)) }
+        }
 
         /** How WhatsApp (and others) say "voice message" in a notification, in Spanish and English. */
         /** Pictures go at most this big (pixels on the long side): sharp on the radio, small over the Wi-Fi. */

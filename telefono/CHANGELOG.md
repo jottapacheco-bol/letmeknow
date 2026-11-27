@@ -1,5 +1,9 @@
 # LetMeKnow del teléfono
 
+## 1.0.5
+
+- Si Android deja de pasarle las notificaciones a LetMeKnow (Samsung a veces lo hace), LetMeKnow le pide que vuelva a pasárselas, sin tener que abrir la app.
+
 ## 1.0.4
 
 - Manda al radio todos los mensajes que trae cada notificación, con su hora, y cuál es el chat de cada una (así el radio no se confunde cuando WhatsApp cambia el nombre).
