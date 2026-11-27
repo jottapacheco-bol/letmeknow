@@ -20,8 +20,8 @@ android {
         applicationId = "org.bolcr.letmeknow.radio"
         minSdk = 26
         targetSdk = 37
-        versionCode = 11
-        versionName = "1.0.10"
+        versionCode = 12
+        versionName = "1.0.11"
         // Google's voice (Chirp 3 HD), the key Levite uses for its voices. Empty: the radio's own voice reads.
         // On GitHub it comes from the repository's secret of the same name.
         val ttsKey = keys.getProperty("TTS_KEY_LEVITE") ?: providers.environmentVariable("TTS_KEY_LEVITE").orNull ?: ""
