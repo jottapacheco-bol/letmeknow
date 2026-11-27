@@ -1227,6 +1227,69 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     }
 
     /** The picture as big as the window lets; touching anywhere (or the radio's back button) goes back. */
+    /**
+     * Two fingers make the picture bigger or smaller, around where they are; one finger moves a big picture; two quick
+     * touches go to twice and a half, or back. A touch beside the picture closes it, only at its normal size (so a
+     * finger lifted after zooming doesn't close it by mistake).
+     */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun zoomable(cover: FrameLayout, pic: View) {
+        var zoom = 1f
+        fun room(z: Float) = ((pic.width * z - cover.width) / 2f).coerceAtLeast(0f) to ((pic.height * z - cover.height) / 2f).coerceAtLeast(0f)
+        fun keepIn() {
+            val (mx, my) = room(zoom)
+            pic.translationX = pic.translationX.coerceIn(-mx, mx)
+            pic.translationY = pic.translationY.coerceIn(-my, my)
+        }
+        val scaler = android.view.ScaleGestureDetector(context, object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(d: android.view.ScaleGestureDetector): Boolean {
+                pic.animate().cancel()
+                val next = (zoom * d.scaleFactor).coerceIn(1f, 5f)
+                val f = next / zoom
+                // The spot under the fingers stays under them.
+                val cx = cover.width / 2f + pic.translationX
+                val cy = cover.height / 2f + pic.translationY
+                pic.translationX += (cx - d.focusX) * (f - 1)
+                pic.translationY += (cy - d.focusY) * (f - 1)
+                zoom = next
+                pic.scaleX = zoom; pic.scaleY = zoom
+                keepIn()
+                return true
+            }
+        })
+        val gestures = android.view.GestureDetector(context, object : android.view.GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent) = true
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                if (zoom < 1.02f) closeBig()
+                return true
+            }
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                val to = if (zoom > 1.02f) 1f else 2.5f
+                val f = to / zoom
+                val cx = cover.width / 2f + pic.translationX
+                val cy = cover.height / 2f + pic.translationY
+                val (mx, my) = room(to)
+                val tx = if (to == 1f) 0f else (pic.translationX + (cx - e.x) * (f - 1)).coerceIn(-mx, mx)
+                val ty = if (to == 1f) 0f else (pic.translationY + (cy - e.y) * (f - 1)).coerceIn(-my, my)
+                zoom = to
+                pic.animate().scaleX(to).scaleY(to).translationX(tx).translationY(ty).setDuration(260).setInterpolator(DecelerateInterpolator(1.6f)).start()
+                return true
+            }
+            override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
+                if (zoom <= 1f || scaler.isInProgress) return false
+                pic.translationX -= dx
+                pic.translationY -= dy
+                keepIn()
+                return true
+            }
+        })
+        cover.setOnTouchListener { _, e ->
+            scaler.onTouchEvent(e)
+            gestures.onTouchEvent(e)
+            true
+        }
+    }
+
     private fun showBig(n: Notice, media: android.graphics.Bitmap) {
         val root = panel as? FrameLayout ?: return
         closeBig()
@@ -1234,7 +1297,6 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         val cover = FrameLayout(context).apply {
             setBackgroundColor(android.graphics.Color.argb(210, 0, 0, 0))
             isClickable = true
-            setOnClickListener { closeBig() }
             alpha = 0f
             animate().alpha(1f).setDuration(200).start()
         }
@@ -1251,6 +1313,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             animate().scaleX(1f).scaleY(1f).setDuration(450).setInterpolator(OvershootInterpolator(1.1f)).start()
         }
         cover.addView(pic, FrameLayout.LayoutParams((media.width * k).toInt(), (media.height * k).toInt(), Gravity.CENTER))
+        zoomable(cover, pic)
         if (n.video) {
             // The radio only has the first frame: the video itself plays on the phone.
             cover.addView(row(Gravity.CENTER).apply {

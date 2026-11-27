@@ -1,5 +1,9 @@
 # LetMeKnow del radio
 
+## 1.0.11
+
+- La foto en grande se puede acercar: con dos dedos se agranda o se achica donde están los dedos, con un dedo se mueve, y dos toques rápidos la acercan o la vuelven a su tamaño. Tocar al lado la cierra solo cuando está en su tamaño normal; la X la cierra siempre.
+
 ## 1.0.10
 
 - La ventana del mensaje tapa también la barra del radio (atrás, inicio, la hora) mientras está abierta. Deslizando desde el borde, la barra sale un momento.
