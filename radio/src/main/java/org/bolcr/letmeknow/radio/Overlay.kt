@@ -854,13 +854,14 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         kept = n
         stopChain()
         mode = Mode.READ
+        if (openKey != key) lastSender = null
         openKey = key
         dictation?.stop()
         stopAudio()
         // It arrived while another one was open: now that it is in front, it is read (or its audio plays).
         if (later.remove(key)) {
             if (n.audio != null) startRow = key
-            else main.postDelayed({ if (openKey == key && !busy()) speaker.read(n) else queue.addFirst(Turn(key, whole = true)) }, 500)
+            else main.postDelayed({ if (openKey == key && !busy()) readOne(n) else queue.addFirst(Turn(key, whole = true)) }, 500)
         }
         fill(c, whole = true)
         val whole = row(Gravity.TOP)
@@ -1085,17 +1086,32 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         mark(v, true)
         chainNow = v
         chatScroll?.smoothScrollTo(0, (v.top - look.px(8)).coerceAtLeast(0))
-        val who = n.title.ifBlank { n.app }
-        val sender = m.sender.takeIf { it.isNotBlank() && it != n.title }
-        val what = if (m.voice || m.audio != null) "un mensaje de voz" else m.text
-        val words = when {
-            first && sender != null -> "$sender, en $who: $what"
-            first -> "$who: $what"
-            sender != null -> "$sender: $what"
-            else -> what
-        }
-        speaker.say(words, if (Settings.female(context, n)) CloudVoice.FEMALE else CloudVoice.MALE)
+        if (first) lastSender = null
+        val what = if (m.voice || m.audio != null) "Un mensaje de voz." else m.text
+        speaker.say(inWindow(n, m.sender, what), if (Settings.female(context, n)) CloudVoice.FEMALE else CloudVoice.MALE)
         return true
+    }
+
+    /** Who said the last message read in the open window, so the same person in a row is not named again. */
+    private var lastSender: String? = null
+
+    /**
+     * What is said for a message while its conversation is open: the window already says with whom, so in a chat
+     * with one person no name at all; in a group, the name only when it is someone else than the one before.
+     */
+    private fun inWindow(n: Notice, sender: String, what: String): String {
+        val who = sender.takeIf { it.isNotBlank() && it != n.title } ?: return what
+        if (who == lastSender) return what
+        lastSender = who
+        return "$who: $what"
+    }
+
+    /** A message read whole: without names that aren't needed if its window is open, with them if not. */
+    private fun readOne(n: Notice) {
+        if (panel == null || openKey != n.key) { speaker.read(n); return }
+        val l = n.lines.lastOrNull()
+        val what = if (n.voice) "Un mensaje de voz." else l?.text ?: n.text
+        speaker.say(inWindow(n, l?.sender.orEmpty(), what), if (Settings.female(context, n)) CloudVoice.FEMALE else CloudVoice.MALE)
     }
 
     private fun stopChain() {
@@ -1408,7 +1424,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             val n = Inbox.get(t.key) ?: continue
             if (t.whole && panel != null && openKey != t.key) { later.add(t.key); continue }
             if (!t.whole) { speaker.announce(n, if (Settings.announceCount(context)) Inbox.count(n.key) else 0); return }
-            if (n.audio != null) playAlone(n) else speaker.read(n)
+            if (n.audio != null) playAlone(n) else readOne(n)
             return
         }
     }
@@ -1444,7 +1460,7 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         Thread {
             val mp = prepareAudio(n) ?: run {
                 // The radio can't play it: the words are read instead.
-                main.post { loading.remove(id); if (waitingAudio == id) { waitingAudio = null; speaker.read(n) } }
+                main.post { loading.remove(id); if (waitingAudio == id) { waitingAudio = null; readOne(n) } }
                 return@Thread
             }
             main.post {

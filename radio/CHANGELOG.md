@@ -1,5 +1,9 @@
 # LetMeKnow del radio
 
+## 1.0.13
+
+- Con la ventana abierta, al leer en voz alta ya no se repite de quién es cada mensaje. En una conversación con una sola persona no se dice el nombre. En un grupo se dice solo cuando cambia la persona: varios seguidos de la misma, una sola vez.
+
 ## 1.0.12
 
 - Al tocar «Leer desde aquí», mientras se prepara la voz el botón muestra tres puntitos que suben y bajan; las barras salen solo cuando la voz ya suena. Leyendo varios seguidos, entre uno y otro vuelven los puntitos.
