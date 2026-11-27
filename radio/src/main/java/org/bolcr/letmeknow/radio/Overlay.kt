@@ -103,6 +103,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
         const val FOLD_MS = 5_000L
         /** Several messages of one person in a row (41 photos): said once, this long after the last one came. */
         const val SETTLE_MS = 1_200L
+        /** Between one bubble and the next when they move one after the other. */
+        const val STAGGER_MS = 80L
     }
 
     private fun changed(arrived: Notice?) {
@@ -334,34 +336,35 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
     }
 
     /**
-     * Touching opens. Dragging moves all the bubbles anywhere (also to the other side of the screen), so they never
-     * cover what is behind. Holding still fills an orange ring around the photo and opens [onHold] by itself. While
-     * dragging, a half moon with a ✕ rises at the bottom centre (like the bubbles of Messenger); letting go over it
-     * ignores this conversation ([onThrow]) and the bubbles go back where they were.
+     * Touching opens. Dragging moves only the touched bubble (a picture of it, [Flyer]), anywhere on the screen; the
+     * others wait where they are. Holding still fills an orange ring around the photo and opens [onHold] by itself.
+     * While dragging, a half moon with a ✕ rises at the bottom centre (like the bubbles of Messenger): letting go over
+     * it ignores this conversation ([onThrow]) and the ones below close the gap ([closeGap]). Let go anywhere else,
+     * the others come to it one after the other ([land]).
      */
     @SuppressLint("ClickableViewAccessibility")
     private fun drag(v: View, onThrow: (() -> Unit)? = null, onHold: (() -> Unit)? = null, onTap: () -> Unit) {
         val slop = ViewConfiguration.get(context).scaledTouchSlop
         var downY = 0f
         var downX = 0f
-        var startY = 0
-        var startX = 0
-        // 0 nothing yet, 1 moving the bubbles, 4 the hold already opened its window.
+        // 0 nothing yet, 1 moving the bubble, 4 the hold already opened its window.
         var gesture = 0
         val ring = if (onHold != null) HoldRing(look.px(10) + look.px(32), look.px(42).toFloat(), look.px(5).toFloat()).also { v.foreground = it } else null
         var filling: ValueAnimator? = null
         var bin: Bin? = null
+        var flyer: Flyer? = null
+        var fromLeft = 0
+        var fromTop = 0
         fun stopFilling() {
             filling?.cancel()
             filling = null
             ring?.progress = 0f
         }
         v.setOnTouchListener { view, e ->
-            val params = bubblesParams ?: return@setOnTouchListener false
-            val fromEnd = params.gravity and Gravity.END == Gravity.END
+            if (bubblesParams == null || flying) return@setOnTouchListener false
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    downX = e.rawX; downY = e.rawY; startY = params.y; startX = params.x; gesture = 0
+                    downX = e.rawX; downY = e.rawY; gesture = 0
                     view.animate().scaleX(0.96f).scaleY(0.96f).setDuration(90).start()
                     if (ring != null) {
                         filling = ValueAnimator.ofFloat(0f, 1f).apply {
@@ -389,23 +392,25 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                     val dy = e.rawY - downY
                     if (gesture == 0 && (abs(dx) > slop || abs(dy) > slop)) {
                         stopFilling()
-                        view.animate().scaleX(1f).scaleY(1f).setDuration(90).start()
+                        view.animate().cancel()
+                        view.scaleX = 1f; view.scaleY = 1f
                         gesture = 1
+                        // Its picture goes with the finger; its own place stays, empty, so nothing else moves.
+                        flyer = Flyer(view).also { fromLeft = it.left; fromTop = it.top }
+                        view.alpha = 0f
                         if (onThrow != null) bin = Bin()
                     }
                     if (gesture == 1) {
-                        val width = context.resources.displayMetrics.widthPixels
-                        params.y = (startY + dy).toInt().coerceAtLeast(0)
-                        // All the way across the screen; on letting go they stick to the nearer side.
-                        val room = (width - (bubbles?.width ?: 0)).coerceAtLeast(0)
-                        params.x = (startX + if (fromEnd) -dx else dx).toInt().coerceIn(0, room)
-                        bubbles?.let { runCatching { wm.updateViewLayout(it, params) } }
+                        val dm = context.resources.displayMetrics
+                        val f = flyer
+                        f?.moveTo((fromLeft + dx).toInt().coerceIn(0, (dm.widthPixels - view.width).coerceAtLeast(0)),
+                            (fromTop + dy).toInt().coerceIn(0, (dm.heightPixels - view.height).coerceAtLeast(0)))
                         bin?.let { b ->
                             val was = b.near
                             b.follow(e.rawX, e.rawY)
-                            if (b.near != was) {
+                            if (b.near != was && f != null) {
                                 if (b.near) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                                view.animate().scaleX(if (b.near) 0.8f else 1f).scaleY(if (b.near) 0.8f else 1f).alpha(if (b.near) 0.7f else 1f).setDuration(140).start()
+                                f.view.animate().scaleX(if (b.near) 0.8f else 1f).scaleY(if (b.near) 0.8f else 1f).alpha(if (b.near) 0.7f else 1f).setDuration(140).start()
                             }
                         }
                     }
@@ -414,25 +419,172 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                     stopFilling()
                     val b = bin
                     bin = null
+                    val f = flyer
+                    flyer = null
                     val dropped = b?.near == true && e.actionMasked == MotionEvent.ACTION_UP && gesture == 1
                     b?.hide(swallow = dropped)
-                    if (dropped) {
-                        // Ignored: the bubbles go back where they were, without this one.
-                        params.x = startX; params.y = startY
-                        view.animate().scaleX(0f).scaleY(0f).alpha(0f).setDuration(180).withEndAction {
-                            bubbles?.let { runCatching { wm.updateViewLayout(it, params) } }
-                            onThrow?.invoke()
-                        }.start()
+                    if (dropped && f != null) {
+                        // Ignored: only this one goes into the ✕; the ones below come up to fill its place.
+                        f.view.animate().scaleX(0f).scaleY(0f).alpha(0f).setDuration(180).withEndAction { f.remove() }.start()
+                        closeGap(view) { onThrow?.invoke() }
                         return@setOnTouchListener true
                     }
-                    view.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(120).start()
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
                     when (gesture) {
-                        1 -> settle(params, e.rawX)
+                        1 -> if (f != null) land(view, f, e.rawX) else view.alpha = 1f
                         0 -> if (e.actionMasked == MotionEvent.ACTION_UP) onTap()
                     }
                 }
             }
             true
+        }
+    }
+
+    /** While the bubbles fly to their new place: touching them waits until they are there. */
+    private var flying = false
+
+    /** Where a window put at (0, 0) really shows on the screen (the status bar can push it down). */
+    private var inset = android.graphics.Point(0, 0)
+    private var insetKnown = false
+
+    /**
+     * A picture of a bubble (with its shadow) in its own small window that can't be touched: what moves while the
+     * real bubbles wait. [left] and [top] are where the bubble itself is on the screen.
+     */
+    private inner class Flyer(from: View) {
+        private val pad = look.px(40)
+        val view = ImageView(context)
+        private val params = WindowManager.LayoutParams(
+            from.width + 2 * pad, from.height + 2 * pad,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT,
+        ).apply { gravity = Gravity.TOP or Gravity.START }
+        var left = 0
+            private set
+        var top = 0
+            private set
+
+        init {
+            val picture = android.graphics.Bitmap.createBitmap(params.width.coerceAtLeast(1), params.height.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(picture)
+            canvas.translate(pad.toFloat(), pad.toFloat())
+            from.draw(canvas)
+            view.setImageBitmap(picture)
+            val at = IntArray(2)
+            from.getLocationOnScreen(at)
+            moveTo(at[0], at[1])
+            runCatching { wm.addView(view, params) }
+            if (!insetKnown) view.post {
+                // The first one tells how far the screen moves an overlay window; the next ones already know.
+                val seen = IntArray(2)
+                view.getLocationOnScreen(seen)
+                inset = android.graphics.Point(seen[0] - params.x, seen[1] - params.y)
+                insetKnown = true
+                moveTo(left, top)
+            }
+        }
+
+        fun moveTo(x: Int, y: Int) {
+            left = x; top = y
+            params.x = x - pad - inset.x
+            params.y = y - pad - inset.y
+            if (view.isAttachedToWindow) runCatching { wm.updateViewLayout(view, params) }
+        }
+
+        fun glide(x: Int, y: Int, delay: Long, ms: Long, ease: android.animation.TimeInterpolator, end: (() -> Unit)? = null) {
+            val fx = left
+            val fy = top
+            ValueAnimator.ofFloat(0f, 1f).apply {
+                startDelay = delay
+                duration = ms
+                interpolator = ease
+                addUpdateListener {
+                    val k = it.animatedValue as Float
+                    moveTo((fx + (x - fx) * k).toInt(), (fy + (y - fy) * k).toInt())
+                }
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(a: android.animation.Animator) { end?.invoke() }
+                })
+                start()
+            }
+        }
+
+        fun remove() { runCatching { wm.removeView(view) } }
+    }
+
+    /** [v] was ignored: the bubbles below it come up to its place, one after the other, then [done]. */
+    private fun closeGap(v: View, done: () -> Unit) {
+        val root = v.parent as? ViewGroup
+        val at = root?.indexOfChild(v) ?: -1
+        if (root == null || at < 0 || at == root.childCount - 1) { done(); return }
+        val shift = (root.getChildAt(at + 1).top - v.top).toFloat()
+        val moving = root.childCount - at - 1
+        for (k in at + 1 until root.childCount) {
+            root.getChildAt(k).animate().translationY(-shift).setStartDelay((k - at - 1) * STAGGER_MS)
+                .setDuration(320).setInterpolator(OvershootInterpolator(1.1f)).start()
+        }
+        main.postDelayed(done, (moving - 1) * STAGGER_MS + 340)
+    }
+
+    /**
+     * [v] was let go where its picture [ghost] is: the group moves there, in the same order (the ones that were above
+     * it stay above). If they don't all fit there, the moved one first slides just enough; then the others fly to
+     * their places one after the other, the nearest first, each with a little bounce.
+     */
+    private fun land(v: View, ghost: Flyer, rawX: Float) {
+        val root = bubbles
+        val params = bubblesParams
+        if (root == null || params == null || v.parent !== root) { ghost.remove(); v.alpha = 1f; return }
+        flying = true
+        val dm = context.resources.displayMetrics
+        val width = dm.widthPixels
+        val left = rawX < width / 2
+        val wasLeft = params.gravity and Gravity.END != Gravity.END
+        val pad = root.paddingLeft
+        val rootAt = IntArray(2)
+        root.getLocationOnScreen(rootAt)
+        val insetY = rootAt[1] - params.y
+        val insetX = if (wasLeft) rootAt[0] - params.x else inset.x
+        // Where the screen's right edge is for a window measured from the right.
+        val right = if (wasLeft) width + inset.x else rootAt[0] + root.width + params.x
+        // The window's top on screen, so the moved one stays where it was let go, unless the others don't fit.
+        val lowest = (dm.heightPixels - root.height + root.paddingBottom).coerceAtLeast(insetY)
+        val winTop = (ghost.top - v.top).coerceIn(insetY, lowest)
+        val room = (width - root.width).coerceAtLeast(0)
+        val x = (if (left) ghost.left - pad - insetX else right - pad - (ghost.left + v.width)).coerceIn(0, room)
+        fun leftOf(c: View) = if (left) insetX + x + pad else right - x - pad - c.width
+        val rows = (0 until root.childCount).map { root.getChildAt(it) }
+        val at = rows.indexOf(v)
+        val targets = rows.map { leftOf(it) to winTop + it.top }
+        ghost.glide(targets[at].first, targets[at].second, 0, 220, DecelerateInterpolator(1.4f)) {
+            // The real ones hide while their pictures fly; the window waits for them at its new place.
+            val others = rows.indices.filter { it != at }.map { it to Flyer(rows[it]) }
+            root.alpha = 0f
+            v.alpha = 1f
+            params.y = winTop - insetY
+            params.x = x
+            Settings.setBubblesY(context, params.y)
+            Settings.setBubblesX(context, params.x)
+            if (left != wasLeft) {
+                Settings.setBubblesLeft(context, left)
+                params.gravity = Gravity.TOP or if (left) Gravity.START else Gravity.END
+            }
+            runCatching { wm.updateViewLayout(root, params) }
+            if (left != wasLeft) refreshBubbles(null)
+            val all = others.map { it.second } + ghost
+            val finish: () -> Unit = {
+                root.alpha = 1f
+                flying = false
+                main.post { all.forEach { it.remove() } }
+            }
+            if (others.isEmpty()) { finish(); return@glide }
+            val order = others.sortedBy { abs(it.first - at) }
+            order.forEachIndexed { rank, (i, f) ->
+                f.glide(targets[i].first, targets[i].second, rank * STAGGER_MS, 420, OvershootInterpolator(1.2f),
+                    if (rank == order.lastIndex) finish else null)
+            }
         }
     }
 
@@ -492,24 +644,6 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             if (swallow) moon.animate().scaleX(1.35f).scaleY(1.35f).setDuration(120).withEndAction { moon.animate().scaleX(1f).scaleY(1f).setDuration(120).start(); down() }.start()
             else down()
         }
-    }
-
-    /** After moving: the bubbles keep their place, on the side of the screen where they were left. */
-    private fun settle(params: WindowManager.LayoutParams, rawX: Float) {
-        val width = context.resources.displayMetrics.widthPixels
-        val left = rawX < width / 2
-        val root = bubbles ?: return
-        if (left != Settings.bubblesLeft(context)) {
-            // The same spot on screen, measured from the other edge.
-            params.x = (width - params.x - root.width).coerceIn(0, (width - root.width).coerceAtLeast(0))
-            Settings.setBubblesLeft(context, left)
-            params.gravity = Gravity.TOP or if (left) Gravity.START else Gravity.END
-            runCatching { wm.updateViewLayout(root, params) }
-            // After the touch ends: taking away the bubble that is being touched, inside its own touch, crashed the app.
-            main.post { refreshBubbles(null) }
-        }
-        Settings.setBubblesY(context, params.y)
-        Settings.setBubblesX(context, params.x)
     }
 
     // ---------------------------------------------------------------- the panel
@@ -847,10 +981,33 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             }
         }
 
-        // Several conversations: a sideways swipe on the words goes to the next or the one before, like pages.
+        // Several conversations: a low bar at the bottom, and a sideways swipe on the words does the same.
         val all = Inbox.all
         val at = all.indexOfFirst { it.key == n.key }
         if (all.size > 1) {
+            fun go(by: Int) {
+                val next = all[(at + by + all.size) % all.size].key
+                textBox.animate().translationX(-by * look.px(80).toFloat()).alpha(0f).setDuration(140)
+                    .withEndAction { showRead(next, fade = true) }.start()
+            }
+            val bar = row(Gravity.CENTER_VERTICAL)
+            fun flat(res: Int, description: String, by: Int) = FrameLayout(context).apply {
+                background = look.round(look.chip, 26, stroke = true)
+                contentDescription = description
+                setOnClickListener { go(by) }
+                addView(icon(res, look.ink, 30, null).apply { minimumWidth = 0; minimumHeight = 0 },
+                    FrameLayout.LayoutParams(look.px(30), look.px(30), Gravity.CENTER))
+            }
+            bar.addView(flat(R.drawable.ic_prev, "Anterior", -1), LinearLayout.LayoutParams(look.px(170), look.px(52)))
+            val dots = row(Gravity.CENTER)
+            all.take(8).forEachIndexed { i, _ ->
+                val d = View(context).apply { background = look.round(if (i == at) Look.ORANGE else look.off, 5) }
+                dots.addView(d, LinearLayout.LayoutParams(look.px(if (i == at) 26 else 10), look.px(10)).apply { marginStart = look.px(4); marginEnd = look.px(4) })
+            }
+            bar.addView(dots, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            bar.addView(flat(R.drawable.ic_next, "Siguiente", 1), LinearLayout.LayoutParams(look.px(170), look.px(52)))
+            right.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = look.px(12) })
+
             val far = look.px(110)
             var sx = 0f
             var sy = 0f
@@ -864,12 +1021,8 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                         val dx = e.rawX - sx
                         val swiped = e.actionMasked == MotionEvent.ACTION_UP && abs(dx) > far && abs(dx) > abs(e.rawY - sy) * 1.5f
-                        if (swiped) {
-                            val by = if (dx < 0) 1 else -1
-                            val next = all[(at + by + all.size) % all.size].key
-                            textBox.animate().translationX(-by * look.px(80).toFloat()).alpha(0f).setDuration(140)
-                                .withEndAction { showRead(next, fade = true) }.start()
-                        } else textBox.animate().translationX(0f).setDuration(150).start()
+                        // To the left shows the next one, to the right the one before, like turning pages.
+                        if (swiped) go(if (dx < 0) 1 else -1) else textBox.animate().translationX(0f).setDuration(150).start()
                     }
                 }
                 false
@@ -987,10 +1140,6 @@ class Overlay(private val context: Context, private val send: (String) -> Unit) 
             smallAt(small(R.drawable.ic_settings, "Ajustes de esta conversación") { openMute(n, fromWindow = true) })
             gap()
             smallAt(small(R.drawable.ic_list, "Todas las conversaciones") { showAll() }, first = true)
-            if (all.size > 1) {
-                smallAt(small(R.drawable.ic_prev, "Anterior") { showRead(all[(at - 1 + all.size) % all.size].key, fade = true) })
-                smallAt(small(R.drawable.ic_next, "Siguiente") { showRead(all[(at + 1) % all.size].key, fade = true) })
-            }
             gap()
             // Ignorar: not shown again on the radio (nothing changes on the phone). Leído: also read in WhatsApp.
             h.addView(pill(R.drawable.ic_eye_off, "Ignorar", look.chip, look.ink, stroke = true) { done(n.key, closeAfter = false) },

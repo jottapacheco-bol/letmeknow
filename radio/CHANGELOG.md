@@ -1,5 +1,12 @@
 # LetMeKnow del radio
 
+## 1.0.9
+
+- Al arrastrar una burbuja se mueve solo esa, sea cual sea; las demás se quedan quietas.
+- Soltada en la X se ignora solo esa, y las de abajo suben una tras otra a llenar su lugar.
+- Soltada en otro lugar, las demás llegan a ella una tras otra, en el mismo orden y con un pequeño rebote. Si no caben todas ahí, primero la burbuja se corre lo justo para que quepan.
+- Anterior y Siguiente vuelven a la barra de abajo de la ventana, como estaban.
+
 ## 1.0.8
 
 - La ventana ocupa toda la pantalla y muestra la conversación entera: el último mensaje en grande abajo y los anteriores arriba, para verlos bajando con el dedo. Si había un video, se pone en pausa mientras está abierta (la música sigue); para eso hay que dar el permiso «Pausar el video al abrir un mensaje» en la pantalla de LetMeKnow.
