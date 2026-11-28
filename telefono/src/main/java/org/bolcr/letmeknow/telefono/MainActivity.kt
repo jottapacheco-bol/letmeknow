@@ -163,6 +163,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (Listener.instance == null) Listener.rebind(this)
+        KeepAlive.start(this)
         refresh()
     }
 

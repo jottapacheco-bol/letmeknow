@@ -11,8 +11,8 @@ android {
         applicationId = "org.bolcr.letmeknow"
         minSdk = 26
         targetSdk = 37
-        versionCode = 7
-        versionName = "1.0.6"
+        versionCode = 8
+        versionName = "1.0.7"
     }
 
     // The fixed signature (the SIGNING_KEYSTORE secret, put in place by CI), so every version installs over the last.
